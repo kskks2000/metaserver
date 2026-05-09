@@ -1,0 +1,15 @@
+INFO:     Started server process [52844]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+error connecting in 'pool-1': connection failed: connection to server at "211.47.74.33", port 5432 failed: 치명적오류:  사용자 "robert"의 password 인증을 실패했습니다
+error connecting in 'pool-1': connection failed: connection to server at "211.47.74.33", port 5432 failed: 치명적오류:  사용자 "robert"의 password 인증을 실패했습니다
+error connecting in 'pool-1': connection failed: connection to server at "211.47.74.33", port 5432 failed: 치명적오류:  사용자 "robert"의 password 인증을 실패했습니다
+error connecting in 'pool-1': connection failed: connection to server at "211.47.74.33", port 5432 failed: 치명적오류:  사용자 "robert"의 password 인증을 실패했습니다
+error connecting in 'pool-1': connection failed: connection to server at "211.47.74.33", port 5432 failed: 치명적오류:  사용자 "robert"의 password 인증을 실패했습니다
+error connecting in 'pool-1': connection failed: connection to server at "211.47.74.33", port 5432 failed: 치명적오류:  사용자 "robert"의 password 인증을 실패했습니다
+error connecting in 'pool-1': connection failed: connection to server at "211.47.74.33", port 5432 failed: 치명적오류:  사용자 "robert"의 password 인증을 실패했습니다
+error connecting in 'pool-1': connection failed: connection to server at "211.47.74.33", port 5432 failed: 치명적오류:  사용자 "robert"의 password 인증을 실패했습니다
+error connecting in 'pool-1': connection failed: connection to server at "211.47.74.33", port 5432 failed: 치명적오류:  사용자 "robert"의 password 인증을 실패했습니다
+error connecting in 'pool-1': connection failed: connection to server at "211.47.74.33", port 5432 failed: 치명적오류:  사용자 "robert"의 password 인증을 실패했습니다
+reconnection attempt in pool 'pool-1' failed after 300.0 sec
