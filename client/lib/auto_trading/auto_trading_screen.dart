@@ -1,0 +1,2018 @@
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
+
+import '../app/theme.dart';
+import '../core/api_client.dart';
+import '../widgets/brand_mark.dart';
+import 'auto_trading_repository.dart';
+
+enum _AutoTab { dashboard, strategy, execution, risk }
+
+class AutoTradingScreen extends ConsumerStatefulWidget {
+  const AutoTradingScreen({super.key});
+
+  @override
+  ConsumerState<AutoTradingScreen> createState() => _AutoTradingScreenState();
+}
+
+class _AutoTradingScreenState extends ConsumerState<AutoTradingScreen> {
+  late Future<AutoTradingOverview> _overviewFuture;
+  _AutoTab _tab = _AutoTab.dashboard;
+  String? _notice;
+  bool _saving = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _overviewFuture = _loadOverview();
+  }
+
+  Future<AutoTradingOverview> _loadOverview() async {
+    try {
+      final overview =
+          await ref.read(autoTradingRepositoryProvider).loadOverview();
+      if (mounted) setState(() => _notice = null);
+      return overview;
+    } catch (error) {
+      if (isRecoverableApiFailure(error)) {
+        if (mounted) {
+          setState(() {
+            _notice = '백엔드 연결 전까지는 예시 데이터로 자동매매 화면을 보여줍니다.';
+          });
+        }
+        return AutoTradingOverview.fallback();
+      }
+      rethrow;
+    }
+  }
+
+  Future<void> _refresh() async {
+    setState(() {
+      _overviewFuture = _loadOverview();
+    });
+    await _overviewFuture;
+  }
+
+  Future<void> _saveControl(AutoTradingControl control) async {
+    setState(() => _saving = true);
+    try {
+      await ref.read(autoTradingRepositoryProvider).saveControl(control);
+      await _refresh();
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _notice = isRecoverableApiFailure(error)
+            ? '자동매매 설정 저장에 실패했습니다. 백엔드와 DB 연결을 확인해 주세요.'
+            : error.toString();
+      });
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  Future<void> _createStrategy(AutoStrategyDraft draft) async {
+    setState(() => _saving = true);
+    try {
+      await ref.read(autoTradingRepositoryProvider).createStrategy(draft);
+      await _refresh();
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _notice = isRecoverableApiFailure(error)
+            ? '전략 저장에 실패했습니다. 자동매매 API 상태를 확인해 주세요.'
+            : error.toString();
+      });
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  Future<void> _changeStatus(AutoStrategy strategy, String status) async {
+    setState(() => _saving = true);
+    try {
+      await ref
+          .read(autoTradingRepositoryProvider)
+          .updateStrategyStatus(strategy.id, status);
+      await _refresh();
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _notice = isRecoverableApiFailure(error)
+            ? '전략 상태 변경에 실패했습니다. 잠시 후 다시 시도해 주세요.'
+            : error.toString();
+      });
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: MetaServerColors.canvas,
+      appBar: AppBar(
+        toolbarHeight: 70,
+        backgroundColor: MetaServerColors.canvas,
+        surfaceTintColor: Colors.transparent,
+        title: const BrandMark(size: 38),
+        actions: [
+          _ToolbarButton(
+            tooltip: '주식매매',
+            icon: Icons.show_chart_rounded,
+            onPressed: () => context.go('/trading'),
+          ),
+          const SizedBox(width: 8),
+          _ToolbarButton(
+            tooltip: '새로고침',
+            icon: Icons.refresh_rounded,
+            onPressed: _saving ? null : _refresh,
+          ),
+          const SizedBox(width: 14),
+        ],
+      ),
+      body: SafeArea(
+        child: FutureBuilder<AutoTradingOverview>(
+          future: _overviewFuture,
+          builder: (context, snapshot) {
+            final overview = snapshot.data ?? AutoTradingOverview.fallback();
+            return SingleChildScrollView(
+              padding: const EdgeInsets.fromLTRB(20, 8, 20, 28),
+              child: Center(
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 1180),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      if (_notice != null) ...[
+                        _Notice(message: _notice!),
+                        const SizedBox(height: 14),
+                      ],
+                      _HeroConsole(
+                        overview: overview,
+                        saving: _saving,
+                        onToggleAutomation: (enabled) {
+                          final base =
+                              overview.control ?? AutoTradingControl.fallback();
+                          _saveControl(base.copyWith(
+                            automationEnabled: enabled,
+                            killSwitchEnabled:
+                                enabled ? false : base.killSwitchEnabled,
+                          ));
+                        },
+                        onToggleKillSwitch: (enabled) {
+                          final base =
+                              overview.control ?? AutoTradingControl.fallback();
+                          _saveControl(base.copyWith(
+                            killSwitchEnabled: enabled,
+                            automationEnabled:
+                                enabled ? false : base.automationEnabled,
+                            killSwitchReason: enabled ? '사용자 수동 중지' : '',
+                          ));
+                        },
+                      ),
+                      const SizedBox(height: 16),
+                      _TabStrip(
+                        selected: _tab,
+                        onSelected: (tab) => setState(() => _tab = tab),
+                      ),
+                      const SizedBox(height: 16),
+                      if (snapshot.connectionState == ConnectionState.waiting)
+                        const LinearProgressIndicator(minHeight: 3),
+                      _SelectedTab(
+                        tab: _tab,
+                        overview: overview,
+                        saving: _saving,
+                        onCreateStrategy: _createStrategy,
+                        onChangeStatus: _changeStatus,
+                        onSaveControl: _saveControl,
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            );
+          },
+        ),
+      ),
+    );
+  }
+}
+
+class _SelectedTab extends StatelessWidget {
+  const _SelectedTab({
+    required this.tab,
+    required this.overview,
+    required this.saving,
+    required this.onCreateStrategy,
+    required this.onChangeStatus,
+    required this.onSaveControl,
+  });
+
+  final _AutoTab tab;
+  final AutoTradingOverview overview;
+  final bool saving;
+  final ValueChanged<AutoStrategyDraft> onCreateStrategy;
+  final void Function(AutoStrategy strategy, String status) onChangeStatus;
+  final ValueChanged<AutoTradingControl> onSaveControl;
+
+  @override
+  Widget build(BuildContext context) {
+    return switch (tab) {
+      _AutoTab.dashboard => _DashboardTab(overview: overview),
+      _AutoTab.strategy => _StrategyTab(
+          overview: overview,
+          saving: saving,
+          onCreateStrategy: onCreateStrategy,
+          onChangeStatus: onChangeStatus,
+        ),
+      _AutoTab.execution => _ExecutionTab(overview: overview),
+      _AutoTab.risk => _RiskTab(
+          control: overview.control ?? AutoTradingControl.fallback(),
+          saving: saving,
+          onSave: onSaveControl,
+        ),
+    };
+  }
+}
+
+class _HeroConsole extends StatelessWidget {
+  const _HeroConsole({
+    required this.overview,
+    required this.saving,
+    required this.onToggleAutomation,
+    required this.onToggleKillSwitch,
+  });
+
+  final AutoTradingOverview overview;
+  final bool saving;
+  final ValueChanged<bool> onToggleAutomation;
+  final ValueChanged<bool> onToggleKillSwitch;
+
+  @override
+  Widget build(BuildContext context) {
+    final control = overview.control ?? AutoTradingControl.fallback();
+    final enabled = control.automationEnabled && !control.killSwitchEnabled;
+
+    return Container(
+      padding: const EdgeInsets.all(22),
+      decoration: BoxDecoration(
+        color: MetaServerColors.ink,
+        borderRadius: BorderRadius.circular(8),
+        boxShadow: [
+          BoxShadow(
+            color: MetaServerColors.ink.withValues(alpha: 0.16),
+            blurRadius: 32,
+            offset: const Offset(0, 16),
+          ),
+        ],
+      ),
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final header = Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Container(
+                    width: 58,
+                    height: 58,
+                    decoration: BoxDecoration(
+                      color: MetaServerColors.mint.withValues(alpha: 0.16),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(
+                        color: MetaServerColors.mint.withValues(alpha: 0.28),
+                      ),
+                    ),
+                    child: Icon(
+                      enabled
+                          ? Icons.precision_manufacturing_rounded
+                          : Icons.power_settings_new_rounded,
+                      color: MetaServerColors.mint,
+                      size: 31,
+                    ),
+                  ),
+                  const SizedBox(width: 14),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          '자동매매 콘솔',
+                          style: Theme.of(context)
+                              .textTheme
+                              .headlineSmall
+                              ?.copyWith(
+                                color: Colors.white,
+                                fontWeight: FontWeight.w900,
+                              ),
+                        ),
+                        const SizedBox(height: 5),
+                        Text(
+                          enabled
+                              ? '감시, 신호, 주문 보호장치가 준비되어 있습니다.'
+                              : '자동 주문은 비활성 상태입니다.',
+                          style: TextStyle(
+                            color: Colors.white.withValues(alpha: 0.72),
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 16),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  _DarkPill(
+                    icon: Icons.memory_rounded,
+                    label: '${overview.runningRuns}개 실행',
+                    color: MetaServerColors.mint,
+                  ),
+                  _DarkPill(
+                    icon: Icons.rule_rounded,
+                    label: '${overview.pendingSignals}개 신호 대기',
+                    color: MetaServerColors.cyan,
+                  ),
+                  _DarkPill(
+                    icon: Icons.receipt_long_rounded,
+                    label: '오늘 ${overview.todayActions}건',
+                    color: MetaServerColors.green,
+                  ),
+                ],
+              ),
+            ],
+          );
+
+          final controls = _HeroControls(
+            control: control,
+            saving: saving,
+            onToggleAutomation: onToggleAutomation,
+            onToggleKillSwitch: onToggleKillSwitch,
+          );
+
+          if (constraints.maxWidth >= 780) {
+            return Row(
+              crossAxisAlignment: CrossAxisAlignment.center,
+              children: [
+                Expanded(flex: 6, child: header),
+                const SizedBox(width: 18),
+                Expanded(flex: 4, child: controls),
+              ],
+            );
+          }
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              header,
+              const SizedBox(height: 18),
+              controls,
+            ],
+          );
+        },
+      ),
+    );
+  }
+}
+
+class _HeroControls extends StatelessWidget {
+  const _HeroControls({
+    required this.control,
+    required this.saving,
+    required this.onToggleAutomation,
+    required this.onToggleKillSwitch,
+  });
+
+  final AutoTradingControl control;
+  final bool saving;
+  final ValueChanged<bool> onToggleAutomation;
+  final ValueChanged<bool> onToggleKillSwitch;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.07),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.1)),
+      ),
+      child: Column(
+        children: [
+          _DarkSwitchRow(
+            label: '자동 감시',
+            icon: Icons.sensors_rounded,
+            value: control.automationEnabled,
+            onChanged: saving ? null : onToggleAutomation,
+          ),
+          const Divider(height: 18, color: Color(0x3353CAA0)),
+          _DarkSwitchRow(
+            label: '긴급 중지',
+            icon: Icons.gpp_bad_outlined,
+            value: control.killSwitchEnabled,
+            danger: true,
+            onChanged: saving ? null : onToggleKillSwitch,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _TabStrip extends StatelessWidget {
+  const _TabStrip({
+    required this.selected,
+    required this.onSelected,
+  });
+
+  final _AutoTab selected;
+  final ValueChanged<_AutoTab> onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    return SegmentedButton<_AutoTab>(
+      selected: {selected},
+      onSelectionChanged: (value) => onSelected(value.first),
+      showSelectedIcon: false,
+      segments: const [
+        ButtonSegment(
+          value: _AutoTab.dashboard,
+          icon: Icon(Icons.space_dashboard_outlined),
+          label: Text('현황'),
+        ),
+        ButtonSegment(
+          value: _AutoTab.strategy,
+          icon: Icon(Icons.account_tree_outlined),
+          label: Text('전략'),
+        ),
+        ButtonSegment(
+          value: _AutoTab.execution,
+          icon: Icon(Icons.bolt_outlined),
+          label: Text('실행'),
+        ),
+        ButtonSegment(
+          value: _AutoTab.risk,
+          icon: Icon(Icons.health_and_safety_outlined),
+          label: Text('리스크'),
+        ),
+      ],
+      style: ButtonStyle(
+        visualDensity: VisualDensity.compact,
+        backgroundColor: WidgetStateProperty.resolveWith((states) {
+          if (states.contains(WidgetState.selected)) {
+            return MetaServerColors.ink;
+          }
+          return Colors.white;
+        }),
+        foregroundColor: WidgetStateProperty.resolveWith((states) {
+          if (states.contains(WidgetState.selected)) {
+            return Colors.white;
+          }
+          return MetaServerColors.ink;
+        }),
+        side: WidgetStateProperty.all(
+          const BorderSide(color: MetaServerColors.line),
+        ),
+      ),
+    );
+  }
+}
+
+class _DashboardTab extends StatelessWidget {
+  const _DashboardTab({required this.overview});
+
+  final AutoTradingOverview overview;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        _ResponsiveGrid(
+          minTileWidth: 170,
+          children: [
+            _MetricPanel(
+              icon: Icons.account_tree_rounded,
+              label: '전체 전략',
+              value: '${overview.totalStrategies}',
+              accent: MetaServerColors.cyan,
+            ),
+            _MetricPanel(
+              icon: Icons.play_circle_outline_rounded,
+              label: '활성 전략',
+              value: '${overview.activeStrategies}',
+              accent: MetaServerColors.green,
+            ),
+            _MetricPanel(
+              icon: Icons.pending_actions_rounded,
+              label: '대기 신호',
+              value: '${overview.pendingSignals}',
+              accent: MetaServerColors.amber,
+            ),
+            _MetricPanel(
+              icon: Icons.receipt_long_rounded,
+              label: '오늘 액션',
+              value: '${overview.todayActions}',
+              accent: MetaServerColors.mint,
+            ),
+          ],
+        ),
+        const SizedBox(height: 16),
+        LayoutBuilder(
+          builder: (context, constraints) {
+            final strategies = _Panel(
+              title: '전략 상태',
+              icon: Icons.route_rounded,
+              child: Column(
+                children: [
+                  if (overview.strategies.isEmpty)
+                    const _EmptyState(
+                      icon: Icons.account_tree_outlined,
+                      title: '등록된 전략이 없습니다',
+                      subtitle: '전략 탭에서 첫 자동매매 조건을 만들어 보세요.',
+                    )
+                  else
+                    for (final strategy in overview.strategies)
+                      _CompactStrategyRow(strategy: strategy),
+                ],
+              ),
+            );
+            final events = _Panel(
+              title: '최근 이벤트',
+              icon: Icons.timeline_rounded,
+              child: _EventList(events: overview.events),
+            );
+
+            if (constraints.maxWidth >= 860) {
+              return Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Expanded(flex: 6, child: strategies),
+                  const SizedBox(width: 16),
+                  Expanded(flex: 4, child: events),
+                ],
+              );
+            }
+            return Column(
+              children: [
+                strategies,
+                const SizedBox(height: 16),
+                events,
+              ],
+            );
+          },
+        ),
+      ],
+    );
+  }
+}
+
+class _StrategyTab extends StatefulWidget {
+  const _StrategyTab({
+    required this.overview,
+    required this.saving,
+    required this.onCreateStrategy,
+    required this.onChangeStatus,
+  });
+
+  final AutoTradingOverview overview;
+  final bool saving;
+  final ValueChanged<AutoStrategyDraft> onCreateStrategy;
+  final void Function(AutoStrategy strategy, String status) onChangeStatus;
+
+  @override
+  State<_StrategyTab> createState() => _StrategyTabState();
+}
+
+class _StrategyTabState extends State<_StrategyTab> {
+  final _nameController = TextEditingController(text: '단기 모멘텀 자동감시');
+  final _descriptionController = TextEditingController(
+    text: '거래대금 증가와 이동평균 돌파를 함께 확인한 뒤 승인 대기 신호를 생성합니다.',
+  );
+  final _maxOrderController = TextEditingController(text: '500000');
+  final _maxLossController = TextEditingController(text: '100000');
+  String _strategyType = 'momentum';
+  int _cooldownSeconds = 90;
+
+  @override
+  void dispose() {
+    _nameController.dispose();
+    _descriptionController.dispose();
+    _maxOrderController.dispose();
+    _maxLossController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final builder = _Panel(
+          title: '전략 설계',
+          icon: Icons.schema_rounded,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              _TextInput(
+                controller: _nameController,
+                label: '전략 이름',
+                icon: Icons.edit_note_rounded,
+              ),
+              const SizedBox(height: 12),
+              _TextInput(
+                controller: _descriptionController,
+                label: '전략 설명',
+                icon: Icons.notes_rounded,
+                minLines: 2,
+              ),
+              const SizedBox(height: 14),
+              _FieldTitle(icon: Icons.category_outlined, label: '전략 유형'),
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  _ChoiceChip(
+                    label: '모멘텀',
+                    selected: _strategyType == 'momentum',
+                    onSelected: () => setState(() {
+                      _strategyType = 'momentum';
+                    }),
+                  ),
+                  _ChoiceChip(
+                    label: '조건식',
+                    selected: _strategyType == 'condition',
+                    onSelected: () => setState(() {
+                      _strategyType = 'condition';
+                    }),
+                  ),
+                  _ChoiceChip(
+                    label: '분할매수',
+                    selected: _strategyType == 'dca',
+                    onSelected: () => setState(() {
+                      _strategyType = 'dca';
+                    }),
+                  ),
+                  _ChoiceChip(
+                    label: '리밸런싱',
+                    selected: _strategyType == 'rebalance',
+                    onSelected: () => setState(() {
+                      _strategyType = 'rebalance';
+                    }),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 14),
+              Row(
+                children: [
+                  Expanded(
+                    child: _TextInput(
+                      controller: _maxOrderController,
+                      label: '단일 주문 한도',
+                      icon: Icons.payments_outlined,
+                      keyboardType: TextInputType.number,
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: _TextInput(
+                      controller: _maxLossController,
+                      label: '일 손실 한도',
+                      icon: Icons.trending_down_rounded,
+                      keyboardType: TextInputType.number,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 14),
+              _FieldTitle(
+                icon: Icons.timer_outlined,
+                label: '재평가 대기 $_cooldownSeconds초',
+              ),
+              Slider(
+                value: _cooldownSeconds.toDouble(),
+                min: 30,
+                max: 300,
+                divisions: 9,
+                label: '$_cooldownSeconds초',
+                onChanged: (value) => setState(() {
+                  _cooldownSeconds = value.round();
+                }),
+              ),
+              const SizedBox(height: 6),
+              FilledButton.icon(
+                onPressed: widget.saving
+                    ? null
+                    : () {
+                        widget.onCreateStrategy(
+                          AutoStrategyDraft(
+                            name: _nameController.text.trim(),
+                            description: _descriptionController.text.trim(),
+                            strategyType: _strategyType,
+                            maxOrderAmount: _maxOrderController.text.trim(),
+                            maxDailyLossAmount: _maxLossController.text.trim(),
+                            cooldownSeconds: _cooldownSeconds,
+                          ),
+                        );
+                      },
+                icon: const Icon(Icons.save_outlined),
+                label: const Text('전략 저장'),
+              ),
+            ],
+          ),
+        );
+
+        final list = _Panel(
+          title: '전략 목록',
+          icon: Icons.account_tree_outlined,
+          child: Column(
+            children: [
+              if (widget.overview.strategies.isEmpty)
+                const _EmptyState(
+                  icon: Icons.route_outlined,
+                  title: '아직 만든 전략이 없습니다',
+                  subtitle: '전략을 저장하면 실행 준비 상태로 이곳에 표시됩니다.',
+                )
+              else
+                for (final strategy in widget.overview.strategies)
+                  _StrategyCard(
+                    strategy: strategy,
+                    saving: widget.saving,
+                    onChangeStatus: widget.onChangeStatus,
+                  ),
+            ],
+          ),
+        );
+
+        if (constraints.maxWidth >= 920) {
+          return Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(flex: 5, child: builder),
+              const SizedBox(width: 16),
+              Expanded(flex: 5, child: list),
+            ],
+          );
+        }
+        return Column(
+          children: [
+            builder,
+            const SizedBox(height: 16),
+            list,
+          ],
+        );
+      },
+    );
+  }
+}
+
+class _ExecutionTab extends StatelessWidget {
+  const _ExecutionTab({required this.overview});
+
+  final AutoTradingOverview overview;
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final queue = _Panel(
+          title: '신호 큐',
+          icon: Icons.rule_folder_outlined,
+          child: Column(
+            children: const [
+              _SignalRow(
+                symbol: '005930',
+                title: '거래대금 증가 + 5일선 돌파',
+                side: '매수 검토',
+                score: 0.82,
+                blocked: false,
+              ),
+              _SignalRow(
+                symbol: '000660',
+                title: '단기 과열 구간 진입',
+                side: '보류',
+                score: 0.58,
+                blocked: true,
+              ),
+              _SignalRow(
+                symbol: '035420',
+                title: '손절 방어선 접근',
+                side: '매도 검토',
+                score: 0.74,
+                blocked: false,
+              ),
+            ],
+          ),
+        );
+
+        final events = _Panel(
+          title: '실행 로그',
+          icon: Icons.manage_history_rounded,
+          child: _EventList(events: overview.events),
+        );
+
+        if (constraints.maxWidth >= 860) {
+          return Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(child: queue),
+              const SizedBox(width: 16),
+              Expanded(child: events),
+            ],
+          );
+        }
+        return Column(
+          children: [
+            queue,
+            const SizedBox(height: 16),
+            events,
+          ],
+        );
+      },
+    );
+  }
+}
+
+class _RiskTab extends StatefulWidget {
+  const _RiskTab({
+    required this.control,
+    required this.saving,
+    required this.onSave,
+  });
+
+  final AutoTradingControl control;
+  final bool saving;
+  final ValueChanged<AutoTradingControl> onSave;
+
+  @override
+  State<_RiskTab> createState() => _RiskTabState();
+}
+
+class _RiskTabState extends State<_RiskTab> {
+  late TextEditingController _maxSingleController;
+  late TextEditingController _maxDailyOrderController;
+  late TextEditingController _maxDailyLossController;
+  late int _maxStrategies;
+  late bool _requireApproval;
+  late bool _liveTrading;
+
+  @override
+  void initState() {
+    super.initState();
+    _setFromControl(widget.control);
+  }
+
+  @override
+  void didUpdateWidget(covariant _RiskTab oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.control != widget.control) {
+      _maxSingleController.dispose();
+      _maxDailyOrderController.dispose();
+      _maxDailyLossController.dispose();
+      _setFromControl(widget.control);
+    }
+  }
+
+  void _setFromControl(AutoTradingControl control) {
+    _maxSingleController =
+        TextEditingController(text: control.maxSingleOrderAmount);
+    _maxDailyOrderController =
+        TextEditingController(text: control.maxDailyAutoOrderAmount);
+    _maxDailyLossController =
+        TextEditingController(text: control.maxDailyAutoLossAmount);
+    _maxStrategies = control.maxConcurrentStrategies;
+    _requireApproval = control.requireSignalApproval;
+    _liveTrading = control.liveTradingEnabled;
+  }
+
+  @override
+  void dispose() {
+    _maxSingleController.dispose();
+    _maxDailyOrderController.dispose();
+    _maxDailyLossController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final settings = _Panel(
+          title: '주문 보호장치',
+          icon: Icons.health_and_safety_outlined,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              _TextInput(
+                controller: _maxSingleController,
+                label: '단일 자동주문 한도',
+                icon: Icons.payments_outlined,
+                keyboardType: TextInputType.number,
+              ),
+              const SizedBox(height: 12),
+              _TextInput(
+                controller: _maxDailyOrderController,
+                label: '일 자동주문 총액 한도',
+                icon: Icons.account_balance_wallet_outlined,
+                keyboardType: TextInputType.number,
+              ),
+              const SizedBox(height: 12),
+              _TextInput(
+                controller: _maxDailyLossController,
+                label: '일 손실 중지 한도',
+                icon: Icons.warning_amber_rounded,
+                keyboardType: TextInputType.number,
+              ),
+              const SizedBox(height: 14),
+              _FieldTitle(
+                icon: Icons.layers_outlined,
+                label: '동시 실행 전략 $_maxStrategies개',
+              ),
+              Slider(
+                value: _maxStrategies.toDouble(),
+                min: 0,
+                max: 10,
+                divisions: 10,
+                label: '$_maxStrategies개',
+                onChanged: (value) => setState(() {
+                  _maxStrategies = value.round();
+                }),
+              ),
+              const SizedBox(height: 8),
+              _PlainSwitchRow(
+                icon: Icons.verified_user_outlined,
+                label: '신호 승인 후 주문',
+                value: _requireApproval,
+                onChanged: (value) => setState(() {
+                  _requireApproval = value;
+                }),
+              ),
+              const SizedBox(height: 8),
+              _PlainSwitchRow(
+                icon: Icons.real_estate_agent_outlined,
+                label: '실전 주문 허용',
+                value: _liveTrading,
+                onChanged: (value) => setState(() {
+                  _liveTrading = value;
+                }),
+              ),
+              const SizedBox(height: 14),
+              FilledButton.icon(
+                onPressed: widget.saving
+                    ? null
+                    : () {
+                        widget.onSave(
+                          widget.control.copyWith(
+                            maxSingleOrderAmount:
+                                _maxSingleController.text.trim(),
+                            maxDailyAutoOrderAmount:
+                                _maxDailyOrderController.text.trim(),
+                            maxDailyAutoLossAmount:
+                                _maxDailyLossController.text.trim(),
+                            maxConcurrentStrategies: _maxStrategies,
+                            requireSignalApproval: _requireApproval,
+                            liveTradingEnabled: _liveTrading,
+                          ),
+                        );
+                      },
+                icon: const Icon(Icons.lock_outline_rounded),
+                label: const Text('리스크 설정 저장'),
+              ),
+            ],
+          ),
+        );
+
+        final backtest = _Panel(
+          title: '백테스트 요약',
+          icon: Icons.analytics_outlined,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: const [
+              _BacktestBar(
+                  label: '승률', value: 0.62, color: MetaServerColors.green),
+              _BacktestBar(
+                  label: '수익률', value: 0.38, color: MetaServerColors.cyan),
+              _BacktestBar(
+                  label: '손실 방어', value: 0.77, color: MetaServerColors.mint),
+              SizedBox(height: 12),
+              _RiskNote(),
+            ],
+          ),
+        );
+
+        if (constraints.maxWidth >= 900) {
+          return Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(flex: 5, child: settings),
+              const SizedBox(width: 16),
+              Expanded(flex: 4, child: backtest),
+            ],
+          );
+        }
+        return Column(
+          children: [
+            settings,
+            const SizedBox(height: 16),
+            backtest,
+          ],
+        );
+      },
+    );
+  }
+}
+
+class _Panel extends StatelessWidget {
+  const _Panel({
+    required this.title,
+    required this.icon,
+    required this.child,
+  });
+
+  final String title;
+  final IconData icon;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: MetaServerColors.line),
+        boxShadow: [
+          BoxShadow(
+            color: MetaServerColors.ink.withValues(alpha: 0.05),
+            blurRadius: 22,
+            offset: const Offset(0, 12),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              _SoftIcon(icon: icon),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  title,
+                  style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                        color: MetaServerColors.ink,
+                        fontWeight: FontWeight.w900,
+                      ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          child,
+        ],
+      ),
+    );
+  }
+}
+
+class _ResponsiveGrid extends StatelessWidget {
+  const _ResponsiveGrid({
+    required this.children,
+    required this.minTileWidth,
+  });
+
+  final List<Widget> children;
+  final double minTileWidth;
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final columns =
+            (constraints.maxWidth / minTileWidth).floor().clamp(1, 4);
+        return GridView.count(
+          shrinkWrap: true,
+          physics: const NeverScrollableScrollPhysics(),
+          crossAxisCount: columns,
+          crossAxisSpacing: 12,
+          mainAxisSpacing: 12,
+          childAspectRatio: columns == 1 ? 3.2 : 1.55,
+          children: children,
+        );
+      },
+    );
+  }
+}
+
+class _MetricPanel extends StatelessWidget {
+  const _MetricPanel({
+    required this.icon,
+    required this.label,
+    required this.value,
+    required this.accent,
+  });
+
+  final IconData icon;
+  final String label;
+  final String value;
+  final Color accent;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: MetaServerColors.line),
+      ),
+      child: Row(
+        children: [
+          _SoftIcon(icon: icon, color: accent),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  label,
+                  style: TextStyle(
+                    color: MetaServerColors.ink.withValues(alpha: 0.58),
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  value,
+                  style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                        color: MetaServerColors.ink,
+                        fontWeight: FontWeight.w900,
+                      ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _StrategyCard extends StatelessWidget {
+  const _StrategyCard({
+    required this.strategy,
+    required this.saving,
+    required this.onChangeStatus,
+  });
+
+  final AutoStrategy strategy;
+  final bool saving;
+  final void Function(AutoStrategy strategy, String status) onChangeStatus;
+
+  @override
+  Widget build(BuildContext context) {
+    final active = strategy.status == 'active';
+    final paused = strategy.status == 'paused';
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: MetaServerColors.canvas,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: MetaServerColors.line),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              _SoftIcon(
+                icon: _strategyIcon(strategy.strategyType),
+                color: active ? MetaServerColors.green : MetaServerColors.cyan,
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      strategy.name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontWeight: FontWeight.w900),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      strategy.description ?? '설명 없음',
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: MetaServerColors.ink.withValues(alpha: 0.58),
+                        fontSize: 12,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              _StatusBadge(status: strategy.status),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              _InfoChip(
+                icon: Icons.currency_exchange_rounded,
+                label: strategy.environment == 'live' ? '실전' : '모의',
+              ),
+              _InfoChip(
+                icon: Icons.payments_outlined,
+                label: '주문 ${_won(strategy.maxOrderAmount)}',
+              ),
+              _InfoChip(
+                icon: Icons.timer_outlined,
+                label: '${strategy.cooldownSeconds}초 간격',
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: saving
+                      ? null
+                      : () => onChangeStatus(
+                            strategy,
+                            active ? 'paused' : 'active',
+                          ),
+                  icon: Icon(active
+                      ? Icons.pause_circle_outline_rounded
+                      : Icons.play_circle_outline_rounded),
+                  label: Text(active ? '일시정지' : '활성화'),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: saving || paused
+                      ? null
+                      : () => onChangeStatus(strategy, 'stopped'),
+                  icon: const Icon(Icons.stop_circle_outlined),
+                  label: const Text('중지'),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _CompactStrategyRow extends StatelessWidget {
+  const _CompactStrategyRow({required this.strategy});
+
+  final AutoStrategy strategy;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Row(
+        children: [
+          _SoftIcon(icon: _strategyIcon(strategy.strategyType), size: 40),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  strategy.name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontWeight: FontWeight.w900),
+                ),
+                const SizedBox(height: 3),
+                Text(
+                  '${_strategyLabel(strategy.strategyType)} · ${strategy.environment == 'live' ? '실전' : '모의'}',
+                  style: TextStyle(
+                    color: MetaServerColors.ink.withValues(alpha: 0.58),
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          _StatusBadge(status: strategy.status),
+        ],
+      ),
+    );
+  }
+}
+
+class _EventList extends StatelessWidget {
+  const _EventList({required this.events});
+
+  final List<AutoStrategyEvent> events;
+
+  @override
+  Widget build(BuildContext context) {
+    if (events.isEmpty) {
+      return const _EmptyState(
+        icon: Icons.timeline_outlined,
+        title: '아직 이벤트가 없습니다',
+        subtitle: '전략 실행과 리스크 판단 결과가 여기에 기록됩니다.',
+      );
+    }
+    return Column(
+      children: [
+        for (final event in events) _EventRow(event: event),
+      ],
+    );
+  }
+}
+
+class _EventRow extends StatelessWidget {
+  const _EventRow({required this.event});
+
+  final AutoStrategyEvent event;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = switch (event.severity) {
+      'warning' => MetaServerColors.amber,
+      'error' || 'critical' => MetaServerColors.danger,
+      _ => MetaServerColors.cyan,
+    };
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: color.withValues(alpha: 0.2)),
+      ),
+      child: Row(
+        children: [
+          Icon(Icons.circle, color: color, size: 10),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  event.eventType,
+                  style: const TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w900,
+                  ),
+                ),
+                const SizedBox(height: 3),
+                Text(
+                  event.message,
+                  style: TextStyle(
+                    color: MetaServerColors.ink.withValues(alpha: 0.72),
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          Text(
+            _shortTime(event.createdAt),
+            style: TextStyle(
+              color: MetaServerColors.ink.withValues(alpha: 0.5),
+              fontSize: 12,
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _SignalRow extends StatelessWidget {
+  const _SignalRow({
+    required this.symbol,
+    required this.title,
+    required this.side,
+    required this.score,
+    required this.blocked,
+  });
+
+  final String symbol;
+  final String title;
+  final String side;
+  final double score;
+  final bool blocked;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = blocked ? MetaServerColors.amber : MetaServerColors.green;
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.all(13),
+      decoration: BoxDecoration(
+        color: MetaServerColors.canvas,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: MetaServerColors.line),
+      ),
+      child: Row(
+        children: [
+          _SoftIcon(
+            icon: blocked ? Icons.block_rounded : Icons.bolt_rounded,
+            color: color,
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '$symbol · $side',
+                  style: const TextStyle(fontWeight: FontWeight.w900),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: MetaServerColors.ink.withValues(alpha: 0.6),
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          SizedBox(
+            width: 54,
+            child: Column(
+              children: [
+                Text(
+                  '${(score * 100).round()}',
+                  style: TextStyle(
+                    color: color,
+                    fontWeight: FontWeight.w900,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                LinearProgressIndicator(
+                  value: score,
+                  minHeight: 4,
+                  backgroundColor: MetaServerColors.line,
+                  color: color,
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _BacktestBar extends StatelessWidget {
+  const _BacktestBar({
+    required this.label,
+    required this.value,
+    required this.color,
+  });
+
+  final String label;
+  final double value;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  label,
+                  style: const TextStyle(fontWeight: FontWeight.w900),
+                ),
+              ),
+              Text(
+                '${(value * 100).round()}%',
+                style: TextStyle(color: color, fontWeight: FontWeight.w900),
+              ),
+            ],
+          ),
+          const SizedBox(height: 7),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(8),
+            child: LinearProgressIndicator(
+              value: value,
+              minHeight: 10,
+              backgroundColor: MetaServerColors.line,
+              color: color,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _RiskNote extends StatelessWidget {
+  const _RiskNote();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(13),
+      decoration: BoxDecoration(
+        color: MetaServerColors.mint.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(8),
+        border:
+            Border.all(color: MetaServerColors.mint.withValues(alpha: 0.25)),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Icon(Icons.info_outline_rounded, color: MetaServerColors.green),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              '실전 주문은 전체 자동감시, 전략별 허용, 리스크 한도, 승인 정책을 모두 통과한 경우에만 전송됩니다.',
+              style: TextStyle(
+                color: MetaServerColors.ink.withValues(alpha: 0.74),
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _TextInput extends StatelessWidget {
+  const _TextInput({
+    required this.controller,
+    required this.label,
+    required this.icon,
+    this.keyboardType,
+    this.minLines = 1,
+  });
+
+  final TextEditingController controller;
+  final String label;
+  final IconData icon;
+  final TextInputType? keyboardType;
+  final int minLines;
+
+  @override
+  Widget build(BuildContext context) {
+    return TextField(
+      controller: controller,
+      keyboardType: keyboardType,
+      minLines: minLines,
+      maxLines: minLines == 1 ? 1 : 4,
+      decoration: InputDecoration(
+        labelText: label,
+        prefixIcon: Icon(icon),
+      ),
+      style: const TextStyle(fontWeight: FontWeight.w800),
+    );
+  }
+}
+
+class _PlainSwitchRow extends StatelessWidget {
+  const _PlainSwitchRow({
+    required this.icon,
+    required this.label,
+    required this.value,
+    required this.onChanged,
+  });
+
+  final IconData icon;
+  final String label;
+  final bool value;
+  final ValueChanged<bool> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: MetaServerColors.canvas,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: MetaServerColors.line),
+      ),
+      child: Row(
+        children: [
+          Icon(icon, color: MetaServerColors.cyan),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(label,
+                style: const TextStyle(fontWeight: FontWeight.w900)),
+          ),
+          Switch(value: value, onChanged: onChanged),
+        ],
+      ),
+    );
+  }
+}
+
+class _DarkSwitchRow extends StatelessWidget {
+  const _DarkSwitchRow({
+    required this.label,
+    required this.icon,
+    required this.value,
+    required this.onChanged,
+    this.danger = false,
+  });
+
+  final String label;
+  final IconData icon;
+  final bool value;
+  final ValueChanged<bool>? onChanged;
+  final bool danger;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = danger ? MetaServerColors.danger : MetaServerColors.mint;
+    return Row(
+      children: [
+        Icon(icon, color: color, size: 22),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Text(
+            label,
+            style: const TextStyle(
+              color: Colors.white,
+              fontWeight: FontWeight.w900,
+            ),
+          ),
+        ),
+        Switch(
+          value: value,
+          onChanged: onChanged,
+          activeThumbColor: color,
+        ),
+      ],
+    );
+  }
+}
+
+class _FieldTitle extends StatelessWidget {
+  const _FieldTitle({
+    required this.icon,
+    required this.label,
+  });
+
+  final IconData icon;
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        Icon(icon, color: MetaServerColors.cyan, size: 19),
+        const SizedBox(width: 7),
+        Expanded(
+          child: Text(
+            label,
+            style: TextStyle(
+              color: MetaServerColors.ink.withValues(alpha: 0.72),
+              fontWeight: FontWeight.w900,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _ChoiceChip extends StatelessWidget {
+  const _ChoiceChip({
+    required this.label,
+    required this.selected,
+    required this.onSelected,
+  });
+
+  final String label;
+  final bool selected;
+  final VoidCallback onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    return FilterChip(
+      selected: selected,
+      onSelected: (_) => onSelected(),
+      label: Text(label),
+      showCheckmark: false,
+      selectedColor: MetaServerColors.mint.withValues(alpha: 0.34),
+      side: BorderSide(
+        color: selected ? MetaServerColors.cyan : MetaServerColors.line,
+      ),
+      labelStyle: const TextStyle(fontWeight: FontWeight.w900),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+    );
+  }
+}
+
+class _SoftIcon extends StatelessWidget {
+  const _SoftIcon({
+    required this.icon,
+    this.color = MetaServerColors.cyan,
+    this.size = 44,
+  });
+
+  final IconData icon;
+  final Color color;
+  final double size;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: size,
+      height: size,
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: color.withValues(alpha: 0.18)),
+      ),
+      child: Icon(icon, color: color, size: size * 0.55),
+    );
+  }
+}
+
+class _StatusBadge extends StatelessWidget {
+  const _StatusBadge({required this.status});
+
+  final String status;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = switch (status) {
+      'active' => MetaServerColors.green,
+      'paused' => MetaServerColors.amber,
+      'stopped' => MetaServerColors.danger,
+      _ => MetaServerColors.cyan,
+    };
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 6),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: color.withValues(alpha: 0.22)),
+      ),
+      child: Text(
+        _statusLabel(status),
+        style: TextStyle(
+          color: color,
+          fontSize: 12,
+          fontWeight: FontWeight.w900,
+        ),
+      ),
+    );
+  }
+}
+
+class _InfoChip extends StatelessWidget {
+  const _InfoChip({
+    required this.icon,
+    required this.label,
+  });
+
+  final IconData icon;
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 7),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: MetaServerColors.line),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, color: MetaServerColors.cyan, size: 16),
+          const SizedBox(width: 6),
+          Text(
+            label,
+            style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w900),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _DarkPill extends StatelessWidget {
+  const _DarkPill({
+    required this.icon,
+    required this.label,
+    required this.color,
+  });
+
+  final IconData icon;
+  final String label;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 8),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.14),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: color.withValues(alpha: 0.22)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, color: color, size: 16),
+          const SizedBox(width: 6),
+          Text(
+            label,
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 12,
+              fontWeight: FontWeight.w900,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _EmptyState extends StatelessWidget {
+  const _EmptyState({
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+  });
+
+  final IconData icon;
+  final String title;
+  final String subtitle;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: MetaServerColors.canvas,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: MetaServerColors.line),
+      ),
+      child: Column(
+        children: [
+          _SoftIcon(icon: icon),
+          const SizedBox(height: 10),
+          Text(title, style: const TextStyle(fontWeight: FontWeight.w900)),
+          const SizedBox(height: 4),
+          Text(
+            subtitle,
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              color: MetaServerColors.ink.withValues(alpha: 0.58),
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _Notice extends StatelessWidget {
+  const _Notice({required this.message});
+
+  final String message;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(13),
+      decoration: BoxDecoration(
+        color: MetaServerColors.amber.withValues(alpha: 0.1),
+        borderRadius: BorderRadius.circular(8),
+        border:
+            Border.all(color: MetaServerColors.amber.withValues(alpha: 0.3)),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.info_outline_rounded, color: MetaServerColors.amber),
+          const SizedBox(width: 9),
+          Expanded(
+            child: Text(
+              message,
+              style: const TextStyle(fontWeight: FontWeight.w800),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ToolbarButton extends StatelessWidget {
+  const _ToolbarButton({
+    required this.tooltip,
+    required this.icon,
+    required this.onPressed,
+  });
+
+  final String tooltip;
+  final IconData icon;
+  final VoidCallback? onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    return IconButton(
+      tooltip: tooltip,
+      onPressed: onPressed,
+      icon: Icon(icon, size: 23),
+      style: IconButton.styleFrom(
+        fixedSize: const Size(44, 44),
+        backgroundColor: Colors.white,
+        foregroundColor: MetaServerColors.ink,
+        disabledBackgroundColor: MetaServerColors.line.withValues(alpha: 0.55),
+        side: const BorderSide(color: MetaServerColors.line),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+      ),
+    );
+  }
+}
+
+IconData _strategyIcon(String type) {
+  return switch (type) {
+    'momentum' => Icons.trending_up_rounded,
+    'dca' => Icons.stacked_line_chart_rounded,
+    'rebalance' => Icons.balance_rounded,
+    'grid' => Icons.grid_view_rounded,
+    _ => Icons.rule_rounded,
+  };
+}
+
+String _strategyLabel(String type) {
+  return switch (type) {
+    'momentum' => '모멘텀',
+    'dca' => '분할매수',
+    'rebalance' => '리밸런싱',
+    'grid' => '그리드',
+    _ => '조건식',
+  };
+}
+
+String _statusLabel(String status) {
+  return switch (status) {
+    'active' => '활성',
+    'paused' => '일시정지',
+    'stopped' => '중지',
+    'archived' => '보관',
+    _ => '초안',
+  };
+}
+
+String _won(String? value) {
+  final number = int.tryParse((value ?? '0').split('.').first) ?? 0;
+  return '${_comma(number)}원';
+}
+
+String _comma(int value) {
+  final text = value.toString();
+  final buffer = StringBuffer();
+  for (var i = 0; i < text.length; i++) {
+    final remaining = text.length - i;
+    buffer.write(text[i]);
+    if (remaining > 1 && remaining % 3 == 1) {
+      buffer.write(',');
+    }
+  }
+  return buffer.toString();
+}
+
+String _shortTime(String value) {
+  if (value.length >= 16 && value.contains('T')) {
+    return value.substring(11, 16);
+  }
+  if (value.length >= 16 && value.contains(' ')) {
+    return value.substring(11, 16);
+  }
+  return value;
+}
