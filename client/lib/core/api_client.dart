@@ -15,12 +15,12 @@ final apiClientProvider = Provider<ApiClient>((ref) {
 
 String get defaultApiBaseUrl {
   if (kIsWeb) {
-    final origin = Uri.base.origin;
     final host = Uri.base.host;
     if (host == 'localhost' || host == '127.0.0.1') {
       return 'http://localhost:8000/api/v1';
     }
-    return '$origin/bridge/v1';
+    // Use the current host's proxy path so apex/www deployments never cross CORS.
+    return '/bridge/v1';
   }
 
   return switch (defaultTargetPlatform) {
@@ -43,6 +43,14 @@ bool isRecoverableApiFailure(Object error) {
 
 String? apiFailureMessage(Object error) {
   if (error is! DioException) return null;
+  if (error.type == DioExceptionType.connectionError) {
+    return '서버에 연결하지 못했습니다. 네트워크 또는 도메인 연결 설정을 확인해 주세요.';
+  }
+  if (error.type == DioExceptionType.connectionTimeout ||
+      error.type == DioExceptionType.receiveTimeout ||
+      error.type == DioExceptionType.sendTimeout) {
+    return '서버 응답이 지연되고 있습니다. 잠시 후 다시 시도해 주세요.';
+  }
   final data = error.response?.data;
   if (data is Map) {
     final detail = data['detail'];

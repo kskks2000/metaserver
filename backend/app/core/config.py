@@ -34,6 +34,9 @@ class Settings(BaseSettings):
         "http://localhost:5173",
         "http://localhost:8080",
         "http://localhost:8000",
+        "https://metaserver.co.kr",
+        "https://www.metaserver.co.kr",
+        "https://api.metaserver.co.kr",
     ]
 
     kis_default_environment: Literal["paper", "live"] = "paper"
