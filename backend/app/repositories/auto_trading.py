@@ -363,10 +363,294 @@ def create_event(
     return _row(row)
 
 
+def list_signals(
+    conn: Connection,
+    user_id: str,
+    limit: int = 50,
+) -> list[dict[str, Any]]:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT
+                sig.*,
+                s.name AS strategy_name,
+                i.symbol,
+                COALESCE(i.name_ko, i.symbol) AS name
+            FROM auto_trade_signals sig
+            JOIN auto_trading_strategies s ON s.id = sig.strategy_id
+            JOIN instruments i ON i.id = sig.instrument_id
+            WHERE s.user_id = %(user_id)s
+              AND s.deleted_at IS NULL
+            ORDER BY sig.generated_at DESC
+            LIMIT %(limit)s
+            """,
+            {"user_id": user_id, "limit": limit},
+        )
+        rows = cur.fetchall()
+    return _rows(rows)
+
+
+def list_actions(
+    conn: Connection,
+    user_id: str,
+    limit: int = 50,
+) -> list[dict[str, Any]]:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT
+                a.*,
+                s.name AS strategy_name,
+                i.symbol,
+                COALESCE(i.name_ko, i.symbol) AS name
+            FROM auto_trade_actions a
+            JOIN auto_trading_strategies s ON s.id = a.strategy_id
+            LEFT JOIN auto_trade_signals sig ON sig.id = a.signal_id
+            LEFT JOIN instruments i ON i.id = sig.instrument_id
+            WHERE s.user_id = %(user_id)s
+              AND s.deleted_at IS NULL
+            ORDER BY a.created_at DESC
+            LIMIT %(limit)s
+            """,
+            {"user_id": user_id, "limit": limit},
+        )
+        rows = cur.fetchall()
+    return _rows(rows)
+
+
+def recent_signal_exists(
+    conn: Connection,
+    strategy_id: str,
+    cooldown_seconds: int,
+) -> bool:
+    if cooldown_seconds <= 0:
+        return False
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT EXISTS (
+                SELECT 1
+                FROM auto_trade_signals
+                WHERE strategy_id = %(strategy_id)s
+                  AND generated_at >= now() - (%(cooldown_seconds)s || ' seconds')::interval
+            ) AS exists
+            """,
+            {
+                "strategy_id": strategy_id,
+                "cooldown_seconds": cooldown_seconds,
+            },
+        )
+        row = cur.fetchone() or {}
+    return bool(row.get("exists"))
+
+
+def daily_action_summary(
+    conn: Connection,
+    user_id: str,
+    strategy_id: str | None = None,
+) -> dict[str, Any]:
+    params: dict[str, Any] = {"user_id": user_id, "strategy_id": strategy_id}
+    strategy_filter = (
+        "AND a.strategy_id = %(strategy_id)s" if strategy_id is not None else ""
+    )
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT
+                COUNT(*) FILTER (
+                    WHERE a.action_type = 'place_order'
+                      AND a.status IN ('pending', 'sent', 'succeeded')
+                )::int AS order_count,
+                COALESCE(
+                    SUM(
+                        CASE
+                            WHEN (a.request_payload->>'expected_amount')
+                                 ~ '^[0-9]+(\\.[0-9]+)?$'
+                            THEN (a.request_payload->>'expected_amount')::numeric
+                            ELSE 0
+                        END
+                    ) FILTER (
+                        WHERE a.action_type = 'place_order'
+                          AND a.status IN ('pending', 'sent', 'succeeded')
+                    ),
+                    0
+                ) AS order_amount
+            FROM auto_trade_actions a
+            JOIN auto_trading_strategies s ON s.id = a.strategy_id
+            WHERE s.user_id = %(user_id)s
+              AND s.deleted_at IS NULL
+              AND a.created_at >= current_date
+              {strategy_filter}
+            """,
+            params,
+        )
+        row = cur.fetchone() or {}
+    return _row(row) or {"order_count": 0, "order_amount": "0"}
+
+
+def create_signal(
+    conn: Connection,
+    *,
+    strategy_id: str,
+    instrument_id: str,
+    signal_type: str,
+    status: str,
+    reason: str,
+    confidence: Decimal | None,
+    market_price: Decimal | None,
+    recommended_quantity: Decimal | None,
+    recommended_price: Decimal | None,
+    risk_checks: dict[str, Any],
+    expires_at: datetime | None = None,
+) -> dict[str, Any]:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO auto_trade_signals (
+                strategy_id,
+                instrument_id,
+                signal_type,
+                status,
+                reason,
+                confidence,
+                market_price,
+                recommended_quantity,
+                recommended_price,
+                risk_checks,
+                approved_at,
+                expires_at
+            )
+            VALUES (
+                %(strategy_id)s,
+                %(instrument_id)s,
+                %(signal_type)s,
+                %(status)s,
+                %(reason)s,
+                %(confidence)s,
+                %(market_price)s,
+                %(recommended_quantity)s,
+                %(recommended_price)s,
+                %(risk_checks)s::jsonb,
+                CASE WHEN %(status)s = 'approved' THEN now() ELSE NULL END,
+                %(expires_at)s
+            )
+            RETURNING *
+            """,
+            {
+                "strategy_id": strategy_id,
+                "instrument_id": instrument_id,
+                "signal_type": signal_type,
+                "status": status,
+                "reason": reason,
+                "confidence": confidence,
+                "market_price": market_price,
+                "recommended_quantity": recommended_quantity,
+                "recommended_price": recommended_price,
+                "risk_checks": Json(risk_checks),
+                "expires_at": expires_at,
+            },
+        )
+        row = cur.fetchone()
+    assert row is not None
+    return _row(row) or {}
+
+
+def create_action(
+    conn: Connection,
+    *,
+    strategy_id: str,
+    signal_id: str | None,
+    action_type: str,
+    status: str,
+    idempotency_key: str,
+    request_payload: dict[str, Any],
+    response_payload: dict[str, Any] | None = None,
+    error_message: str | None = None,
+    completed: bool = False,
+) -> dict[str, Any]:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO auto_trade_actions (
+                strategy_id,
+                signal_id,
+                action_type,
+                status,
+                idempotency_key,
+                request_payload,
+                response_payload,
+                error_message,
+                completed_at
+            )
+            VALUES (
+                %(strategy_id)s,
+                %(signal_id)s,
+                %(action_type)s,
+                %(status)s,
+                %(idempotency_key)s,
+                %(request_payload)s::jsonb,
+                %(response_payload)s::jsonb,
+                %(error_message)s,
+                CASE WHEN %(completed)s THEN now() ELSE NULL END
+            )
+            ON CONFLICT (idempotency_key)
+            DO UPDATE SET idempotency_key = EXCLUDED.idempotency_key
+            RETURNING *
+            """,
+            {
+                "strategy_id": strategy_id,
+                "signal_id": signal_id,
+                "action_type": action_type,
+                "status": status,
+                "idempotency_key": idempotency_key,
+                "request_payload": Json(request_payload),
+                "response_payload": Json(response_payload or {}),
+                "error_message": error_message,
+                "completed": completed,
+            },
+        )
+        row = cur.fetchone()
+    assert row is not None
+    return _row(row) or {}
+
+
+def update_action_result(
+    conn: Connection,
+    action_id: str,
+    *,
+    status: str,
+    response_payload: dict[str, Any],
+    error_message: str | None = None,
+) -> dict[str, Any] | None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE auto_trade_actions
+            SET
+                status = %(status)s,
+                response_payload = %(response_payload)s::jsonb,
+                error_message = %(error_message)s,
+                completed_at = now()
+            WHERE id = %(action_id)s
+            RETURNING *
+            """,
+            {
+                "action_id": action_id,
+                "status": status,
+                "response_payload": Json(response_payload),
+                "error_message": error_message,
+            },
+        )
+        row = cur.fetchone()
+    return _row(row)
+
+
 def get_overview(conn: Connection, user_id: str) -> dict[str, Any]:
     control = get_or_create_control(conn, user_id)
     strategies = list_strategies(conn, user_id, limit=6)
     events = list_events(conn, user_id, limit=8)
+    signals = list_signals(conn, user_id, limit=8)
+    actions = list_actions(conn, user_id, limit=8)
 
     with conn.cursor() as cur:
         cur.execute(
@@ -416,4 +700,6 @@ def get_overview(conn: Connection, user_id: str) -> dict[str, Any]:
         "today_actions": counts.get("today_actions", 0),
         "strategies": strategies,
         "events": events,
+        "signals": signals,
+        "actions": actions,
     }

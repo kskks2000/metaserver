@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
@@ -22,6 +23,7 @@ class _AutoTradingScreenState extends ConsumerState<AutoTradingScreen> {
   _AutoTab _tab = _AutoTab.dashboard;
   String? _notice;
   bool _saving = false;
+  bool _evaluating = false;
 
   @override
   void initState() {
@@ -36,22 +38,19 @@ class _AutoTradingScreenState extends ConsumerState<AutoTradingScreen> {
       if (mounted) setState(() => _notice = null);
       return overview;
     } catch (error) {
-      if (isRecoverableApiFailure(error)) {
-        if (mounted) {
-          setState(() {
-            _notice = '백엔드 연결 전까지는 예시 데이터로 자동매매 화면을 보여줍니다.';
-          });
-        }
-        return AutoTradingOverview.fallback();
+      if (mounted) {
+        setState(() {
+          _notice = apiFailureMessage(error) ??
+              '자동매매 API에 연결하지 못했습니다. 실제 데이터 대신 빈 상태로 표시합니다.';
+        });
       }
+      if (isRecoverableApiFailure(error)) return AutoTradingOverview.fallback();
       rethrow;
     }
   }
 
   Future<void> _refresh() async {
-    setState(() {
-      _overviewFuture = _loadOverview();
-    });
+    setState(() => _overviewFuture = _loadOverview());
     await _overviewFuture;
   }
 
@@ -63,9 +62,7 @@ class _AutoTradingScreenState extends ConsumerState<AutoTradingScreen> {
     } catch (error) {
       if (!mounted) return;
       setState(() {
-        _notice = isRecoverableApiFailure(error)
-            ? '자동매매 설정 저장에 실패했습니다. 백엔드와 DB 연결을 확인해 주세요.'
-            : error.toString();
+        _notice = apiFailureMessage(error) ?? error.toString();
       });
     } finally {
       if (mounted) setState(() => _saving = false);
@@ -80,9 +77,7 @@ class _AutoTradingScreenState extends ConsumerState<AutoTradingScreen> {
     } catch (error) {
       if (!mounted) return;
       setState(() {
-        _notice = isRecoverableApiFailure(error)
-            ? '전략 저장에 실패했습니다. 자동매매 API 상태를 확인해 주세요.'
-            : error.toString();
+        _notice = apiFailureMessage(error) ?? error.toString();
       });
     } finally {
       if (mounted) setState(() => _saving = false);
@@ -99,12 +94,28 @@ class _AutoTradingScreenState extends ConsumerState<AutoTradingScreen> {
     } catch (error) {
       if (!mounted) return;
       setState(() {
-        _notice = isRecoverableApiFailure(error)
-            ? '전략 상태 변경에 실패했습니다. 잠시 후 다시 시도해 주세요.'
-            : error.toString();
+        _notice = apiFailureMessage(error) ?? error.toString();
       });
     } finally {
       if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  Future<void> _evaluate() async {
+    setState(() => _evaluating = true);
+    try {
+      final result =
+          await ref.read(autoTradingRepositoryProvider).evaluateStrategies();
+      if (!mounted) return;
+      setState(() => _notice = result.message);
+      await _refresh();
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _notice = apiFailureMessage(error) ?? error.toString();
+      });
+    } finally {
+      if (mounted) setState(() => _evaluating = false);
     }
   }
 
@@ -127,7 +138,7 @@ class _AutoTradingScreenState extends ConsumerState<AutoTradingScreen> {
           _ToolbarButton(
             tooltip: '새로고침',
             icon: Icons.refresh_rounded,
-            onPressed: _saving ? null : _refresh,
+            onPressed: _saving || _evaluating ? null : _refresh,
           ),
           const SizedBox(width: 14),
         ],
@@ -184,9 +195,11 @@ class _AutoTradingScreenState extends ConsumerState<AutoTradingScreen> {
                         tab: _tab,
                         overview: overview,
                         saving: _saving,
+                        evaluating: _evaluating,
                         onCreateStrategy: _createStrategy,
                         onChangeStatus: _changeStatus,
                         onSaveControl: _saveControl,
+                        onEvaluate: _evaluate,
                       ),
                     ],
                   ),
@@ -205,17 +218,21 @@ class _SelectedTab extends StatelessWidget {
     required this.tab,
     required this.overview,
     required this.saving,
+    required this.evaluating,
     required this.onCreateStrategy,
     required this.onChangeStatus,
     required this.onSaveControl,
+    required this.onEvaluate,
   });
 
   final _AutoTab tab;
   final AutoTradingOverview overview;
   final bool saving;
+  final bool evaluating;
   final ValueChanged<AutoStrategyDraft> onCreateStrategy;
   final void Function(AutoStrategy strategy, String status) onChangeStatus;
   final ValueChanged<AutoTradingControl> onSaveControl;
+  final VoidCallback onEvaluate;
 
   @override
   Widget build(BuildContext context) {
@@ -227,7 +244,11 @@ class _SelectedTab extends StatelessWidget {
           onCreateStrategy: onCreateStrategy,
           onChangeStatus: onChangeStatus,
         ),
-      _AutoTab.execution => _ExecutionTab(overview: overview),
+      _AutoTab.execution => _ExecutionTab(
+          overview: overview,
+          evaluating: evaluating,
+          onEvaluate: onEvaluate,
+        ),
       _AutoTab.risk => _RiskTab(
           control: overview.control ?? AutoTradingControl.fallback(),
           saving: saving,
@@ -311,7 +332,7 @@ class _HeroConsole extends StatelessWidget {
                         const SizedBox(height: 5),
                         Text(
                           enabled
-                              ? '감시, 신호, 주문 보호장치가 준비되어 있습니다.'
+                              ? '활성 전략이 실제 KIS 시세와 리스크 규칙으로 평가됩니다.'
                               : '자동 주문은 비활성 상태입니다.',
                           style: TextStyle(
                             color: Colors.white.withValues(alpha: 0.72),
@@ -526,19 +547,18 @@ class _DashboardTab extends StatelessWidget {
             final strategies = _Panel(
               title: '전략 상태',
               icon: Icons.route_rounded,
-              child: Column(
-                children: [
-                  if (overview.strategies.isEmpty)
-                    const _EmptyState(
+              child: overview.strategies.isEmpty
+                  ? const _EmptyState(
                       icon: Icons.account_tree_outlined,
                       title: '등록된 전략이 없습니다',
-                      subtitle: '전략 탭에서 첫 자동매매 조건을 만들어 보세요.',
+                      subtitle: '전략 탭에서 종목, 조건, 한도를 설정해 주세요.',
                     )
-                  else
-                    for (final strategy in overview.strategies)
-                      _CompactStrategyRow(strategy: strategy),
-                ],
-              ),
+                  : Column(
+                      children: [
+                        for (final strategy in overview.strategies)
+                          _CompactStrategyRow(strategy: strategy),
+                      ],
+                    ),
             );
             final events = _Panel(
               title: '최근 이벤트',
@@ -588,10 +608,12 @@ class _StrategyTab extends StatefulWidget {
 }
 
 class _StrategyTabState extends State<_StrategyTab> {
-  final _nameController = TextEditingController(text: '단기 모멘텀 자동감시');
+  final _nameController = TextEditingController(text: '삼성전자 모멘텀 감시');
   final _descriptionController = TextEditingController(
-    text: '거래대금 증가와 이동평균 돌파를 함께 확인한 뒤 승인 대기 신호를 생성합니다.',
+    text: '실시간 현재가 등락률이 기준을 넘으면 승인 대기 신호를 생성합니다.',
   );
+  final _symbolController = TextEditingController(text: '005930');
+  final _triggerController = TextEditingController(text: '1.0');
   final _maxOrderController = TextEditingController(
     text: formatIntegerInputText('500000'),
   );
@@ -599,12 +621,15 @@ class _StrategyTabState extends State<_StrategyTab> {
     text: formatIntegerInputText('100000'),
   );
   String _strategyType = 'momentum';
+  String _signalSide = 'buy';
   int _cooldownSeconds = 90;
 
   @override
   void dispose() {
     _nameController.dispose();
     _descriptionController.dispose();
+    _symbolController.dispose();
+    _triggerController.dispose();
     _maxOrderController.dispose();
     _maxLossController.dispose();
     super.dispose();
@@ -633,6 +658,30 @@ class _StrategyTabState extends State<_StrategyTab> {
                 minLines: 2,
               ),
               const SizedBox(height: 14),
+              Row(
+                children: [
+                  Expanded(
+                    child: _TextInput(
+                      controller: _symbolController,
+                      label: '종목코드',
+                      icon: Icons.tag_rounded,
+                      keyboardType: TextInputType.number,
+                      digitsOnly: true,
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: _TextInput(
+                      controller: _triggerController,
+                      label: '등락률 기준(%)',
+                      icon: Icons.percent_rounded,
+                      keyboardType:
+                          const TextInputType.numberWithOptions(decimal: true),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 14),
               _FieldTitle(icon: Icons.category_outlined, label: '전략 유형'),
               const SizedBox(height: 8),
               Wrap(
@@ -658,14 +707,37 @@ class _StrategyTabState extends State<_StrategyTab> {
                     selected: _strategyType == 'dca',
                     onSelected: () => setState(() {
                       _strategyType = 'dca';
+                      _signalSide = 'buy';
                     }),
                   ),
                   _ChoiceChip(
-                    label: '리밸런싱',
-                    selected: _strategyType == 'rebalance',
+                    label: '그리드',
+                    selected: _strategyType == 'grid',
                     onSelected: () => setState(() {
-                      _strategyType = 'rebalance';
+                      _strategyType = 'grid';
                     }),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 14),
+              _FieldTitle(icon: Icons.swap_vert_rounded, label: '신호 방향'),
+              const SizedBox(height: 8),
+              SegmentedButton<String>(
+                selected: {_signalSide},
+                onSelectionChanged: (value) {
+                  setState(() => _signalSide = value.first);
+                },
+                showSelectedIcon: false,
+                segments: const [
+                  ButtonSegment(
+                    value: 'buy',
+                    icon: Icon(Icons.add_shopping_cart_rounded),
+                    label: Text('매수'),
+                  ),
+                  ButtonSegment(
+                    value: 'sell',
+                    icon: Icon(Icons.sell_outlined),
+                    label: Text('매도'),
                   ),
                 ],
               ),
@@ -675,7 +747,7 @@ class _StrategyTabState extends State<_StrategyTab> {
                   Expanded(
                     child: _TextInput(
                       controller: _maxOrderController,
-                      label: '단일 주문 한도',
+                      label: '1회 주문 한도',
                       icon: Icons.payments_outlined,
                       keyboardType: TextInputType.number,
                     ),
@@ -708,24 +780,7 @@ class _StrategyTabState extends State<_StrategyTab> {
               ),
               const SizedBox(height: 6),
               FilledButton.icon(
-                onPressed: widget.saving
-                    ? null
-                    : () {
-                        widget.onCreateStrategy(
-                          AutoStrategyDraft(
-                            name: _nameController.text.trim(),
-                            description: _descriptionController.text.trim(),
-                            strategyType: _strategyType,
-                            maxOrderAmount: removeNumberGrouping(
-                              _maxOrderController.text,
-                            ),
-                            maxDailyLossAmount: removeNumberGrouping(
-                              _maxLossController.text,
-                            ),
-                            cooldownSeconds: _cooldownSeconds,
-                          ),
-                        );
-                      },
+                onPressed: widget.saving ? null : _saveDraft,
                 icon: const Icon(Icons.save_outlined),
                 label: const Text('전략 저장'),
               ),
@@ -736,23 +791,22 @@ class _StrategyTabState extends State<_StrategyTab> {
         final list = _Panel(
           title: '전략 목록',
           icon: Icons.account_tree_outlined,
-          child: Column(
-            children: [
-              if (widget.overview.strategies.isEmpty)
-                const _EmptyState(
+          child: widget.overview.strategies.isEmpty
+              ? const _EmptyState(
                   icon: Icons.route_outlined,
                   title: '아직 만든 전략이 없습니다',
-                  subtitle: '전략을 저장하면 실행 준비 상태로 이곳에 표시됩니다.',
+                  subtitle: '저장한 전략은 초안 상태로 시작하고, 활성화해야 평가됩니다.',
                 )
-              else
-                for (final strategy in widget.overview.strategies)
-                  _StrategyCard(
-                    strategy: strategy,
-                    saving: widget.saving,
-                    onChangeStatus: widget.onChangeStatus,
-                  ),
-            ],
-          ),
+              : Column(
+                  children: [
+                    for (final strategy in widget.overview.strategies)
+                      _StrategyCard(
+                        strategy: strategy,
+                        saving: widget.saving,
+                        onChangeStatus: widget.onChangeStatus,
+                      ),
+                  ],
+                ),
         );
 
         if (constraints.maxWidth >= 920) {
@@ -775,71 +829,159 @@ class _StrategyTabState extends State<_StrategyTab> {
       },
     );
   }
+
+  void _saveDraft() {
+    widget.onCreateStrategy(
+      AutoStrategyDraft(
+        name: _nameController.text.trim().isEmpty
+            ? '자동매매 전략'
+            : _nameController.text.trim(),
+        description: _descriptionController.text.trim(),
+        strategyType: _strategyType,
+        symbol: _symbolController.text.trim(),
+        signalSide: _signalSide,
+        triggerChangeRate: _triggerController.text.trim().isEmpty
+            ? '1.0'
+            : _triggerController.text.trim(),
+        maxOrderAmount: removeNumberGrouping(_maxOrderController.text),
+        maxDailyLossAmount: removeNumberGrouping(_maxLossController.text),
+        cooldownSeconds: _cooldownSeconds,
+      ),
+    );
+  }
 }
 
 class _ExecutionTab extends StatelessWidget {
-  const _ExecutionTab({required this.overview});
+  const _ExecutionTab({
+    required this.overview,
+    required this.evaluating,
+    required this.onEvaluate,
+  });
 
   final AutoTradingOverview overview;
+  final bool evaluating;
+  final VoidCallback onEvaluate;
 
   @override
   Widget build(BuildContext context) {
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final queue = _Panel(
-          title: '신호 큐',
-          icon: Icons.rule_folder_outlined,
-          child: Column(
-            children: const [
-              _SignalRow(
-                symbol: '005930',
-                title: '거래대금 증가 + 5일선 돌파',
-                side: '매수 검토',
-                score: 0.82,
-                blocked: false,
-              ),
-              _SignalRow(
-                symbol: '000660',
-                title: '단기 과열 구간 진입',
-                side: '보류',
-                score: 0.58,
-                blocked: true,
-              ),
-              _SignalRow(
-                symbol: '035420',
-                title: '손절 방어선 접근',
-                side: '매도 검토',
-                score: 0.74,
-                blocked: false,
-              ),
-            ],
+    return Column(
+      children: [
+        _ExecutionToolbar(
+          overview: overview,
+          evaluating: evaluating,
+          onEvaluate: onEvaluate,
+        ),
+        const SizedBox(height: 16),
+        LayoutBuilder(
+          builder: (context, constraints) {
+            final queue = _Panel(
+              title: '신호 큐',
+              icon: Icons.rule_folder_outlined,
+              child: overview.signals.isEmpty
+                  ? const _EmptyState(
+                      icon: Icons.bolt_outlined,
+                      title: '대기 중인 자동매매 신호가 없습니다',
+                      subtitle:
+                          '활성 전략을 만든 뒤 전략 평가를 실행하면 실제 KIS 현재가 기준으로 신호가 생성됩니다.',
+                    )
+                  : Column(
+                      children: [
+                        for (final signal in overview.signals)
+                          _SignalRow(signal: signal),
+                      ],
+                    ),
+            );
+
+            final actions = _Panel(
+              title: '액션 로그',
+              icon: Icons.manage_history_rounded,
+              child: overview.actions.isEmpty
+                  ? const _EmptyState(
+                      icon: Icons.history_toggle_off_rounded,
+                      title: '기록된 자동매매 액션이 없습니다',
+                      subtitle: '신호 승인 대기, 리스크 차단, 주문 전송 결과가 여기에 기록됩니다.',
+                    )
+                  : Column(
+                      children: [
+                        for (final action in overview.actions)
+                          _ActionRow(action: action),
+                      ],
+                    ),
+            );
+
+            if (constraints.maxWidth >= 860) {
+              return Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Expanded(child: queue),
+                  const SizedBox(width: 16),
+                  Expanded(child: actions),
+                ],
+              );
+            }
+            return Column(
+              children: [
+                queue,
+                const SizedBox(height: 16),
+                actions,
+              ],
+            );
+          },
+        ),
+      ],
+    );
+  }
+}
+
+class _ExecutionToolbar extends StatelessWidget {
+  const _ExecutionToolbar({
+    required this.overview,
+    required this.evaluating,
+    required this.onEvaluate,
+  });
+
+  final AutoTradingOverview overview;
+  final bool evaluating;
+  final VoidCallback onEvaluate;
+
+  @override
+  Widget build(BuildContext context) {
+    final control = overview.control ?? AutoTradingControl.fallback();
+    final canEvaluate = control.automationEnabled && !control.killSwitchEnabled;
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: MetaServerColors.line),
+      ),
+      child: Row(
+        children: [
+          _SoftIcon(
+              icon: Icons.verified_rounded, color: MetaServerColors.green),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Text(
+              canEvaluate
+                  ? '활성 전략 ${overview.activeStrategies}개를 KIS 현재가와 리스크 규칙으로 평가할 수 있습니다.'
+                  : '자동 감시를 켜고 긴급 중지를 해제하면 전략 평가를 실행할 수 있습니다.',
+              style: const TextStyle(fontWeight: FontWeight.w900),
+            ),
           ),
-        );
-
-        final events = _Panel(
-          title: '실행 로그',
-          icon: Icons.manage_history_rounded,
-          child: _EventList(events: overview.events),
-        );
-
-        if (constraints.maxWidth >= 860) {
-          return Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Expanded(child: queue),
-              const SizedBox(width: 16),
-              Expanded(child: events),
-            ],
-          );
-        }
-        return Column(
-          children: [
-            queue,
-            const SizedBox(height: 16),
-            events,
-          ],
-        );
-      },
+          const SizedBox(width: 12),
+          FilledButton.icon(
+            onPressed: canEvaluate && !evaluating ? onEvaluate : null,
+            icon: evaluating
+                ? const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.play_arrow_rounded),
+            label: Text(evaluating ? '평가 중' : '전략 평가 실행'),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -940,7 +1082,7 @@ class _RiskTabState extends State<_RiskTab> {
               const SizedBox(height: 14),
               _FieldTitle(
                 icon: Icons.layers_outlined,
-                label: '동시 실행 전략 $_maxStrategies개',
+                label: '동시 평가 전략 $_maxStrategies개',
               ),
               Slider(
                 value: _maxStrategies.toDouble(),
@@ -999,20 +1141,38 @@ class _RiskTabState extends State<_RiskTab> {
           ),
         );
 
-        final backtest = _Panel(
-          title: '백테스트 요약',
-          icon: Icons.analytics_outlined,
+        final guard = _Panel(
+          title: '실제 주문 게이트',
+          icon: Icons.fact_check_outlined,
           child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: const [
-              _BacktestBar(
-                  label: '승률', value: 0.62, color: MetaServerColors.green),
-              _BacktestBar(
-                  label: '수익률', value: 0.38, color: MetaServerColors.cyan),
-              _BacktestBar(
-                  label: '손실 방어', value: 0.77, color: MetaServerColors.mint),
-              SizedBox(height: 12),
-              _RiskNote(),
+            children: [
+              _GuardRow(
+                icon: Icons.sensors_rounded,
+                title: '자동 감시',
+                value: widget.control.automationEnabled ? '켜짐' : '꺼짐',
+                passed: widget.control.automationEnabled,
+              ),
+              _GuardRow(
+                icon: Icons.pan_tool_alt_outlined,
+                title: '승인 필요',
+                value: widget.control.requireSignalApproval ? '켜짐' : '꺼짐',
+                passed: widget.control.requireSignalApproval,
+              ),
+              _GuardRow(
+                icon: Icons.payments_outlined,
+                title: '단일 주문 한도',
+                value: _won(widget.control.maxSingleOrderAmount),
+                passed: int.tryParse(widget.control.maxSingleOrderAmount) != 0,
+              ),
+              _GuardRow(
+                icon: Icons.account_balance_wallet_outlined,
+                title: '일 주문 총액 한도',
+                value: _won(widget.control.maxDailyAutoOrderAmount),
+                passed:
+                    int.tryParse(widget.control.maxDailyAutoOrderAmount) != 0,
+              ),
+              const SizedBox(height: 12),
+              const _RiskNote(),
             ],
           ),
         );
@@ -1023,7 +1183,7 @@ class _RiskTabState extends State<_RiskTab> {
             children: [
               Expanded(flex: 5, child: settings),
               const SizedBox(width: 16),
-              Expanded(flex: 4, child: backtest),
+              Expanded(flex: 4, child: guard),
             ],
           );
         }
@@ -1031,7 +1191,7 @@ class _RiskTabState extends State<_RiskTab> {
           children: [
             settings,
             const SizedBox(height: 16),
-            backtest,
+            guard,
           ],
         );
       },
@@ -1072,13 +1232,13 @@ class _Panel extends StatelessWidget {
           Row(
             children: [
               _SoftIcon(icon: icon),
-              const SizedBox(width: 10),
+              const SizedBox(width: 12),
               Expanded(
                 child: Text(
                   title,
                   style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                        color: MetaServerColors.ink,
                         fontWeight: FontWeight.w900,
+                        color: MetaServerColors.ink,
                       ),
                 ),
               ),
@@ -1105,15 +1265,16 @@ class _ResponsiveGrid extends StatelessWidget {
   Widget build(BuildContext context) {
     return LayoutBuilder(
       builder: (context, constraints) {
-        final columns =
-            (constraints.maxWidth / minTileWidth).floor().clamp(1, 4);
+        final count = (constraints.maxWidth / minTileWidth)
+            .floor()
+            .clamp(1, children.length);
         return GridView.count(
-          shrinkWrap: true,
-          physics: const NeverScrollableScrollPhysics(),
-          crossAxisCount: columns,
+          crossAxisCount: count,
           crossAxisSpacing: 12,
           mainAxisSpacing: 12,
-          childAspectRatio: columns == 1 ? 3.2 : 1.55,
+          shrinkWrap: true,
+          physics: const NeverScrollableScrollPhysics(),
+          childAspectRatio: 2.45,
           children: children,
         );
       },
@@ -1137,7 +1298,7 @@ class _MetricPanel extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(8),
@@ -1145,12 +1306,12 @@ class _MetricPanel extends StatelessWidget {
       ),
       child: Row(
         children: [
-          _SoftIcon(icon: icon, color: accent),
+          _SoftIcon(icon: icon, color: accent, size: 38),
           const SizedBox(width: 12),
           Expanded(
             child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
               crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisAlignment: MainAxisAlignment.center,
               children: [
                 Text(
                   label,
@@ -1159,13 +1320,14 @@ class _MetricPanel extends StatelessWidget {
                     fontWeight: FontWeight.w800,
                   ),
                 ),
-                const SizedBox(height: 4),
+                const SizedBox(height: 3),
                 Text(
                   value,
-                  style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                        color: MetaServerColors.ink,
-                        fontWeight: FontWeight.w900,
-                      ),
+                  style: const TextStyle(
+                    color: MetaServerColors.ink,
+                    fontWeight: FontWeight.w900,
+                    fontSize: 24,
+                  ),
                 ),
               ],
             ),
@@ -1189,8 +1351,7 @@ class _StrategyCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final active = strategy.status == 'active';
-    final paused = strategy.status == 'paused';
+    final symbol = strategy.config['symbol']?.toString();
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
       padding: const EdgeInsets.all(14),
@@ -1200,14 +1361,11 @@ class _StrategyCard extends StatelessWidget {
         border: Border.all(color: MetaServerColors.line),
       ),
       child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
             children: [
-              _SoftIcon(
-                icon: _strategyIcon(strategy.strategyType),
-                color: active ? MetaServerColors.green : MetaServerColors.cyan,
-              ),
+              _SoftIcon(icon: _strategyIcon(strategy.strategyType)),
               const SizedBox(width: 10),
               Expanded(
                 child: Column(
@@ -1215,15 +1373,15 @@ class _StrategyCard extends StatelessWidget {
                   children: [
                     Text(
                       strategy.name,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
                       style: const TextStyle(fontWeight: FontWeight.w900),
                     ),
                     const SizedBox(height: 4),
                     Text(
-                      strategy.description ?? '설명 없음',
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
+                      [
+                        _strategyLabel(strategy.strategyType),
+                        strategy.environment == 'live' ? '실전' : '모의',
+                        if (symbol != null && symbol.isNotEmpty) symbol,
+                      ].join(' · '),
                       style: TextStyle(
                         color: MetaServerColors.ink.withValues(alpha: 0.58),
                         fontSize: 12,
@@ -1236,51 +1394,50 @@ class _StrategyCard extends StatelessWidget {
               _StatusBadge(status: strategy.status),
             ],
           ),
+          if ((strategy.description ?? '').isNotEmpty) ...[
+            const SizedBox(height: 10),
+            Text(
+              strategy.description!,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                color: MetaServerColors.ink.withValues(alpha: 0.72),
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ],
           const SizedBox(height: 12),
           Wrap(
             spacing: 8,
             runSpacing: 8,
             children: [
               _InfoChip(
-                icon: Icons.currency_exchange_rounded,
-                label: strategy.environment == 'live' ? '실전' : '모의',
-              ),
-              _InfoChip(
                 icon: Icons.payments_outlined,
-                label: '주문 ${_won(strategy.maxOrderAmount)}',
+                label: '한도 ${_won(strategy.maxOrderAmount)}',
               ),
               _InfoChip(
                 icon: Icons.timer_outlined,
-                label: '${strategy.cooldownSeconds}초 간격',
+                label: '${strategy.cooldownSeconds}초 대기',
               ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          Row(
-            children: [
-              Expanded(
-                child: OutlinedButton.icon(
-                  onPressed: saving
-                      ? null
-                      : () => onChangeStatus(
-                            strategy,
-                            active ? 'paused' : 'active',
-                          ),
-                  icon: Icon(active
-                      ? Icons.pause_circle_outline_rounded
-                      : Icons.play_circle_outline_rounded),
-                  label: Text(active ? '일시정지' : '활성화'),
+              if (strategy.status == 'active')
+                _SmallButton(
+                  icon: Icons.pause_rounded,
+                  label: '일시정지',
+                  onPressed:
+                      saving ? null : () => onChangeStatus(strategy, 'paused'),
+                )
+              else
+                _SmallButton(
+                  icon: Icons.play_arrow_rounded,
+                  label: '활성화',
+                  onPressed:
+                      saving ? null : () => onChangeStatus(strategy, 'active'),
                 ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: OutlinedButton.icon(
-                  onPressed: saving || paused
-                      ? null
-                      : () => onChangeStatus(strategy, 'stopped'),
-                  icon: const Icon(Icons.stop_circle_outlined),
-                  label: const Text('중지'),
-                ),
+              _SmallButton(
+                icon: Icons.stop_rounded,
+                label: '중지',
+                onPressed:
+                    saving ? null : () => onChangeStatus(strategy, 'stopped'),
               ),
             ],
           ),
@@ -1297,8 +1454,15 @@ class _CompactStrategyRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 10),
+    final symbol = strategy.config['symbol']?.toString();
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: MetaServerColors.canvas,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: MetaServerColors.line),
+      ),
       child: Row(
         children: [
           _SoftIcon(icon: _strategyIcon(strategy.strategyType), size: 40),
@@ -1315,7 +1479,11 @@ class _CompactStrategyRow extends StatelessWidget {
                 ),
                 const SizedBox(height: 3),
                 Text(
-                  '${_strategyLabel(strategy.strategyType)} · ${strategy.environment == 'live' ? '실전' : '모의'}',
+                  [
+                    _strategyLabel(strategy.strategyType),
+                    if (symbol != null && symbol.isNotEmpty) symbol,
+                    strategy.environment == 'live' ? '실전' : '모의',
+                  ].join(' · '),
                   style: TextStyle(
                     color: MetaServerColors.ink.withValues(alpha: 0.58),
                     fontSize: 12,
@@ -1326,6 +1494,151 @@ class _CompactStrategyRow extends StatelessWidget {
             ),
           ),
           _StatusBadge(status: strategy.status),
+        ],
+      ),
+    );
+  }
+}
+
+class _SignalRow extends StatelessWidget {
+  const _SignalRow({required this.signal});
+
+  final AutoTradeSignal signal;
+
+  @override
+  Widget build(BuildContext context) {
+    final blocked = signal.status == 'blocked';
+    final color = blocked ? MetaServerColors.amber : MetaServerColors.green;
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.all(13),
+      decoration: BoxDecoration(
+        color: MetaServerColors.canvas,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: MetaServerColors.line),
+      ),
+      child: Row(
+        children: [
+          _SoftIcon(
+            icon: blocked ? Icons.block_rounded : Icons.bolt_rounded,
+            color: color,
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '${signal.symbol} · ${_sideLabel(signal.signalType)} · ${_signalStatus(signal.status)}',
+                  style: const TextStyle(fontWeight: FontWeight.w900),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  signal.reason ?? signal.name,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: MetaServerColors.ink.withValues(alpha: 0.62),
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  '현재가 ${_won(signal.marketPrice.toString())} · 권장 ${signal.recommendedQuantity}주',
+                  style: TextStyle(
+                    color: MetaServerColors.ink.withValues(alpha: 0.5),
+                    fontSize: 12,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          SizedBox(
+            width: 58,
+            child: Column(
+              children: [
+                Text(
+                  '${(signal.confidence * 100).round()}',
+                  style: TextStyle(color: color, fontWeight: FontWeight.w900),
+                ),
+                const SizedBox(height: 4),
+                LinearProgressIndicator(
+                  value: signal.confidence.clamp(0, 1),
+                  minHeight: 4,
+                  backgroundColor: MetaServerColors.line,
+                  color: color,
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ActionRow extends StatelessWidget {
+  const _ActionRow({required this.action});
+
+  final AutoTradeAction action;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = switch (action.status) {
+      'succeeded' || 'sent' => MetaServerColors.green,
+      'failed' || 'canceled' => MetaServerColors.danger,
+      _ => MetaServerColors.amber,
+    };
+    final title = [
+      action.symbol ?? action.requestPayload['symbol']?.toString() ?? '종목',
+      _actionLabel(action.actionType),
+      _actionStatus(action.status),
+    ].join(' · ');
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.all(13),
+      decoration: BoxDecoration(
+        color: MetaServerColors.canvas,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: MetaServerColors.line),
+      ),
+      child: Row(
+        children: [
+          _SoftIcon(icon: Icons.receipt_long_rounded, color: color),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(title,
+                    style: const TextStyle(fontWeight: FontWeight.w900)),
+                const SizedBox(height: 4),
+                Text(
+                  action.errorMessage ??
+                      action.requestPayload['message']?.toString() ??
+                      action.strategyName ??
+                      '',
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: MetaServerColors.ink.withValues(alpha: 0.62),
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          Text(
+            _shortTime(action.createdAt),
+            style: TextStyle(
+              color: MetaServerColors.ink.withValues(alpha: 0.5),
+              fontSize: 12,
+              fontWeight: FontWeight.w800,
+            ),
+          ),
         ],
       ),
     );
@@ -1414,130 +1727,40 @@ class _EventRow extends StatelessWidget {
   }
 }
 
-class _SignalRow extends StatelessWidget {
-  const _SignalRow({
-    required this.symbol,
+class _GuardRow extends StatelessWidget {
+  const _GuardRow({
+    required this.icon,
     required this.title,
-    required this.side,
-    required this.score,
-    required this.blocked,
+    required this.value,
+    required this.passed,
   });
 
-  final String symbol;
+  final IconData icon;
   final String title;
-  final String side;
-  final double score;
-  final bool blocked;
+  final String value;
+  final bool passed;
 
   @override
   Widget build(BuildContext context) {
-    final color = blocked ? MetaServerColors.amber : MetaServerColors.green;
+    final color = passed ? MetaServerColors.green : MetaServerColors.amber;
     return Container(
-      margin: const EdgeInsets.only(bottom: 12),
-      padding: const EdgeInsets.all(13),
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: MetaServerColors.canvas,
+        color: color.withValues(alpha: 0.08),
         borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: MetaServerColors.line),
+        border: Border.all(color: color.withValues(alpha: 0.22)),
       ),
       child: Row(
         children: [
-          _SoftIcon(
-            icon: blocked ? Icons.block_rounded : Icons.bolt_rounded,
-            color: color,
-          ),
+          Icon(icon, color: color),
           const SizedBox(width: 10),
           Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  '$symbol · $side',
-                  style: const TextStyle(fontWeight: FontWeight.w900),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  title,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    color: MetaServerColors.ink.withValues(alpha: 0.6),
-                    fontSize: 12,
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
-              ],
-            ),
+            child: Text(title,
+                style: const TextStyle(fontWeight: FontWeight.w900)),
           ),
-          SizedBox(
-            width: 54,
-            child: Column(
-              children: [
-                Text(
-                  '${(score * 100).round()}',
-                  style: TextStyle(
-                    color: color,
-                    fontWeight: FontWeight.w900,
-                  ),
-                ),
-                const SizedBox(height: 4),
-                LinearProgressIndicator(
-                  value: score,
-                  minHeight: 4,
-                  backgroundColor: MetaServerColors.line,
-                  color: color,
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _BacktestBar extends StatelessWidget {
-  const _BacktestBar({
-    required this.label,
-    required this.value,
-    required this.color,
-  });
-
-  final String label;
-  final double value;
-  final Color color;
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 12),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Expanded(
-                child: Text(
-                  label,
-                  style: const TextStyle(fontWeight: FontWeight.w900),
-                ),
-              ),
-              Text(
-                '${(value * 100).round()}%',
-                style: TextStyle(color: color, fontWeight: FontWeight.w900),
-              ),
-            ],
-          ),
-          const SizedBox(height: 7),
-          ClipRRect(
-            borderRadius: BorderRadius.circular(8),
-            child: LinearProgressIndicator(
-              value: value,
-              minHeight: 10,
-              backgroundColor: MetaServerColors.line,
-              color: color,
-            ),
-          ),
+          Text(value,
+              style: TextStyle(color: color, fontWeight: FontWeight.w900)),
         ],
       ),
     );
@@ -1564,7 +1787,7 @@ class _RiskNote extends StatelessWidget {
           const SizedBox(width: 10),
           Expanded(
             child: Text(
-              '실전 주문은 전체 자동감시, 전략별 허용, 리스크 한도, 승인 정책을 모두 통과한 경우에만 전송됩니다.',
+              '자동 주문은 자동 감시, 긴급 중지 해제, 전략 활성화, 한도, 보유/현금, 실전 허용 게이트를 모두 통과한 경우에만 전송됩니다.',
               style: TextStyle(
                 color: MetaServerColors.ink.withValues(alpha: 0.74),
                 fontWeight: FontWeight.w700,
@@ -1584,6 +1807,7 @@ class _TextInput extends StatelessWidget {
     required this.icon,
     this.keyboardType,
     this.minLines = 1,
+    this.digitsOnly = false,
   });
 
   final TextEditingController controller;
@@ -1591,15 +1815,19 @@ class _TextInput extends StatelessWidget {
   final IconData icon;
   final TextInputType? keyboardType;
   final int minLines;
+  final bool digitsOnly;
 
   @override
   Widget build(BuildContext context) {
+    final numeric = keyboardType == TextInputType.number;
     return TextField(
       controller: controller,
       keyboardType: keyboardType,
-      inputFormatters: keyboardType == TextInputType.number
-          ? const [ThousandsSeparatorInputFormatter()]
-          : null,
+      inputFormatters: digitsOnly
+          ? [FilteringTextInputFormatter.digitsOnly]
+          : numeric
+              ? const [ThousandsSeparatorInputFormatter()]
+              : null,
       minLines: minLines,
       maxLines: minLines == 1 ? 1 : 4,
       decoration: InputDecoration(
@@ -1837,6 +2065,31 @@ class _InfoChip extends StatelessWidget {
   }
 }
 
+class _SmallButton extends StatelessWidget {
+  const _SmallButton({
+    required this.icon,
+    required this.label,
+    required this.onPressed,
+  });
+
+  final IconData icon;
+  final String label;
+  final VoidCallback? onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    return OutlinedButton.icon(
+      onPressed: onPressed,
+      icon: Icon(icon, size: 16),
+      label: Text(label),
+      style: OutlinedButton.styleFrom(
+        minimumSize: const Size(0, 36),
+        padding: const EdgeInsets.symmetric(horizontal: 10),
+      ),
+    );
+  }
+}
+
 class _DarkPill extends StatelessWidget {
   const _DarkPill({
     required this.icon,
@@ -2004,6 +2257,45 @@ String _statusLabel(String status) {
     'stopped' => '중지',
     'archived' => '보관',
     _ => '초안',
+  };
+}
+
+String _sideLabel(String side) {
+  return switch (side) {
+    'sell' || 'exit' || 'risk_stop' => '매도',
+    'hold' => '보류',
+    _ => '매수',
+  };
+}
+
+String _signalStatus(String status) {
+  return switch (status) {
+    'approved' => '승인됨',
+    'blocked' => '차단',
+    'submitted' => '전송됨',
+    'expired' => '만료',
+    'discarded' => '폐기',
+    _ => '승인 대기',
+  };
+}
+
+String _actionLabel(String action) {
+  return switch (action) {
+    'place_order' => '주문 전송',
+    'cancel_order' => '주문 취소',
+    'pause_strategy' => '전략 정지',
+    'stop_strategy' => '전략 중지',
+    _ => '알림',
+  };
+}
+
+String _actionStatus(String status) {
+  return switch (status) {
+    'succeeded' => '성공',
+    'sent' => '전송',
+    'failed' => '실패',
+    'canceled' => '취소',
+    _ => '대기',
   };
 }
 

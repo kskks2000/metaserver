@@ -169,6 +169,52 @@ class AutoStrategyEventRecord(AutoStrategyEventCreate):
     created_at: datetime
 
 
+class AutoTradeSignalRecord(BaseModel):
+    id: str
+    strategy_id: str
+    strategy_name: str | None = None
+    instrument_id: str
+    symbol: str
+    name: str
+    signal_type: AutoSignalType
+    status: AutoSignalStatus
+    reason: str | None = None
+    confidence: Decimal | None = None
+    market_price: Decimal | None = None
+    recommended_quantity: Decimal | None = None
+    recommended_price: Decimal | None = None
+    risk_checks: dict[str, Any] = Field(default_factory=dict)
+    generated_at: datetime
+    expires_at: datetime | None = None
+
+
+class AutoTradeActionRecord(BaseModel):
+    id: str
+    strategy_id: str
+    strategy_name: str | None = None
+    signal_id: str | None = None
+    symbol: str | None = None
+    name: str | None = None
+    action_type: AutoActionType
+    status: str
+    idempotency_key: str | None = None
+    request_payload: dict[str, Any] = Field(default_factory=dict)
+    response_payload: dict[str, Any] = Field(default_factory=dict)
+    error_message: str | None = None
+    created_at: datetime
+    completed_at: datetime | None = None
+
+
+class AutoEvaluationResponse(BaseModel):
+    evaluated_strategies: int = 0
+    generated_signals: int = 0
+    blocked_signals: int = 0
+    submitted_actions: int = 0
+    message: str
+    signals: list[AutoTradeSignalRecord] = Field(default_factory=list)
+    actions: list[AutoTradeActionRecord] = Field(default_factory=list)
+
+
 class AutoBacktestCreate(BaseModel):
     strategy_id: str
     period_start: date
@@ -187,3 +233,5 @@ class AutoTradingOverview(BaseModel):
     today_actions: int = 0
     strategies: list[AutoStrategyRecord] = Field(default_factory=list)
     events: list[AutoStrategyEventRecord] = Field(default_factory=list)
+    signals: list[AutoTradeSignalRecord] = Field(default_factory=list)
+    actions: list[AutoTradeActionRecord] = Field(default_factory=list)

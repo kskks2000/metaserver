@@ -10,15 +10,19 @@ from app.repositories import auto_trading
 from app.repositories.users import get_user_by_firebase_uid, sync_user_from_firebase
 from app.schemas.auth import AuthSessionRequest, FirebasePrincipal
 from app.schemas.auto_trading import (
+    AutoEvaluationResponse,
     AutoStrategyCreate,
     AutoStrategyEventCreate,
     AutoStrategyEventRecord,
     AutoStrategyRecord,
     AutoStrategyStatusUpdate,
+    AutoTradeActionRecord,
+    AutoTradeSignalRecord,
     AutoTradingControlRecord,
     AutoTradingControlUpsert,
     AutoTradingOverview,
 )
+from app.services.auto_trading_engine import evaluate_auto_trading
 
 router = APIRouter(prefix="/auto-trading", tags=["auto-trading"])
 
@@ -58,6 +62,38 @@ def strategies(
         user_id = _current_user_id(conn, principal)
         rows = auto_trading.list_strategies(conn, user_id)
     return [AutoStrategyRecord(**row) for row in rows]
+
+
+@router.get("/signals", response_model=list[AutoTradeSignalRecord])
+def signals(
+    principal: FirebasePrincipal = Depends(get_current_principal),
+) -> list[AutoTradeSignalRecord]:
+    _require_database()
+    with db_connection() as conn:
+        user_id = _current_user_id(conn, principal)
+        rows = auto_trading.list_signals(conn, user_id)
+    return [AutoTradeSignalRecord(**row) for row in rows]
+
+
+@router.get("/actions", response_model=list[AutoTradeActionRecord])
+def actions(
+    principal: FirebasePrincipal = Depends(get_current_principal),
+) -> list[AutoTradeActionRecord]:
+    _require_database()
+    with db_connection() as conn:
+        user_id = _current_user_id(conn, principal)
+        rows = auto_trading.list_actions(conn, user_id)
+    return [AutoTradeActionRecord(**row) for row in rows]
+
+
+@router.post("/evaluate", response_model=AutoEvaluationResponse)
+def evaluate(
+    principal: FirebasePrincipal = Depends(get_current_principal),
+) -> AutoEvaluationResponse:
+    _require_database()
+    with db_connection() as conn:
+        user_id = _current_user_id(conn, principal)
+        return evaluate_auto_trading(conn, user_id)
 
 
 @router.post(
