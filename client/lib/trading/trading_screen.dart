@@ -1801,51 +1801,143 @@ class _OrderValidationNotice extends StatelessWidget {
   }
 }
 
-class _ActivityTab extends StatelessWidget {
+class _ActivityTab extends ConsumerStatefulWidget {
   const _ActivityTab();
+
+  @override
+  ConsumerState<_ActivityTab> createState() => _ActivityTabState();
+}
+
+class _ActivityTabState extends ConsumerState<_ActivityTab> {
+  late Future<KisOrderActivity> _activityFuture;
+
+  @override
+  void initState() {
+    super.initState();
+    _activityFuture = _loadActivity();
+  }
+
+  Future<KisOrderActivity> _loadActivity() {
+    return ref.read(tradingRepositoryProvider).loadKisOrderActivity();
+  }
+
+  void _refreshActivity() {
+    setState(() {
+      _activityFuture = _loadActivity();
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
     return _ScreenScroll(
-      child: LayoutBuilder(
-        builder: (context, constraints) {
-          final openOrders = _Panel(
-            title: '미체결 주문',
-            icon: Icons.pending_actions_outlined,
-            child: Column(
-              children: [
-                for (final order in _openOrders) _OrderTile(order: order),
-              ],
-            ),
-          );
-          final executions = _Panel(
-            title: '체결 내역',
-            icon: Icons.fact_check_outlined,
-            child: Column(
-              children: [
-                for (final execution in _executions)
-                  _ExecutionTile(execution: execution),
-              ],
-            ),
-          );
+      child: FutureBuilder<KisOrderActivity>(
+        future: _activityFuture,
+        builder: (context, snapshot) {
+          final activity = snapshot.data;
+          final loading = snapshot.connectionState == ConnectionState.waiting &&
+              activity == null;
+          final errorMessage = snapshot.hasError && activity == null
+              ? apiFailureMessage(snapshot.error!) ?? snapshot.error.toString()
+              : null;
+          final openOrderItems =
+              activity?.openOrders ?? const <KisOrderActivityItem>[];
+          final executionItems =
+              activity?.executions ?? const <KisOrderActivityItem>[];
 
-          if (constraints.maxWidth >= 900) {
-            return Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Expanded(child: openOrders),
-                const SizedBox(width: 16),
-                Expanded(child: executions),
-              ],
-            );
-          }
+          return LayoutBuilder(
+            builder: (context, constraints) {
+              final openOrders = _Panel(
+                title: '미체결 주문',
+                icon: Icons.pending_actions_outlined,
+                trailing: IconButton(
+                  tooltip: '새로고침',
+                  onPressed: loading ? null : _refreshActivity,
+                  icon: const Icon(Icons.refresh_rounded),
+                ),
+                child: _ActivityPanelBody(
+                  loading: loading,
+                  errorMessage: errorMessage,
+                  emptyMessage: '현재 미체결 주문이 없습니다.',
+                  children: [
+                    for (final order in openOrderItems)
+                      _OrderTile(order: order),
+                  ],
+                ),
+              );
+              final executions = _Panel(
+                title: '체결 내역',
+                icon: Icons.fact_check_outlined,
+                child: _ActivityPanelBody(
+                  loading: loading,
+                  errorMessage: errorMessage,
+                  emptyMessage: '오늘 조회된 체결 내역이 없습니다.',
+                  children: [
+                    for (final execution in executionItems)
+                      _ExecutionTile(execution: execution),
+                  ],
+                ),
+              );
 
-          return Column(
-            children: [openOrders, const SizedBox(height: 16), executions],
+              if (constraints.maxWidth >= 900) {
+                return Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Expanded(child: openOrders),
+                    const SizedBox(width: 16),
+                    Expanded(child: executions),
+                  ],
+                );
+              }
+
+              return Column(
+                children: [openOrders, const SizedBox(height: 16), executions],
+              );
+            },
           );
         },
       ),
     );
+  }
+}
+
+class _ActivityPanelBody extends StatelessWidget {
+  const _ActivityPanelBody({
+    required this.loading,
+    required this.errorMessage,
+    required this.emptyMessage,
+    required this.children,
+  });
+
+  final bool loading;
+  final String? errorMessage;
+  final String emptyMessage;
+  final List<Widget> children;
+
+  @override
+  Widget build(BuildContext context) {
+    if (loading) {
+      return const _PanelStateMessage(
+        icon: Icons.sync_rounded,
+        message: 'KIS 체결 데이터를 불러오는 중입니다.',
+      );
+    }
+
+    if (errorMessage != null) {
+      return _PanelStateMessage(
+        icon: Icons.error_outline_rounded,
+        message: errorMessage!,
+        danger: true,
+      );
+    }
+
+    if (children.isEmpty) {
+      return _PanelStateMessage(
+        icon: Icons.inventory_2_outlined,
+        message: emptyMessage,
+      );
+    }
+
+    return Column(children: children);
   }
 }
 
@@ -3005,33 +3097,31 @@ class _SparklinePainter extends CustomPainter {
 class _OrderTile extends StatelessWidget {
   const _OrderTile({required this.order});
 
-  final _Order order;
+  final KisOrderActivityItem order;
 
   @override
   Widget build(BuildContext context) {
+    final sideText = order.isBuy ? '매수' : '매도';
+    final price = order.price > 0 ? order.price : order.averagePrice;
     return _DataTile(
       leading: _IconBadge(
-        icon: order.side == _TradeSide.buy
-            ? Icons.add_chart_rounded
-            : Icons.sell_outlined,
-        color: order.side == _TradeSide.buy
-            ? MetaServerColors.green
-            : MetaServerColors.danger,
+        icon: order.isBuy ? Icons.add_chart_rounded : Icons.sell_outlined,
+        color: order.isBuy ? MetaServerColors.green : MetaServerColors.danger,
       ),
       title: order.name,
       subtitle:
-          '${order.symbol} · ${order.side == _TradeSide.buy ? '매수' : '매도'} · ${order.status}',
+          '${order.symbol} · $sideText · ${order.status}${_orderNoSuffix(order.orderNo)}',
       trailing: Column(
         crossAxisAlignment: CrossAxisAlignment.end,
         mainAxisSize: MainAxisSize.min,
         children: [
           Text(
-            '${order.filled}/${order.quantity}주',
+            '${_formatQuantity(order.filledQuantity)}/${_formatQuantity(order.quantity)}주',
             style: const TextStyle(fontWeight: FontWeight.w900),
           ),
           const SizedBox(height: 4),
           Text(
-            _won(order.price),
+            price > 0 ? _won(price) : '--',
             style: TextStyle(
               color: MetaServerColors.ink.withValues(alpha: 0.62),
               fontSize: 12,
@@ -3040,10 +3130,6 @@ class _OrderTile extends StatelessWidget {
           ),
         ],
       ),
-      actions: [
-        _MiniAction(label: '정정', icon: Icons.edit_outlined, onTap: () {}),
-        _MiniAction(label: '취소', icon: Icons.close_rounded, onTap: () {}),
-      ],
     );
   }
 }
@@ -3051,31 +3137,33 @@ class _OrderTile extends StatelessWidget {
 class _ExecutionTile extends StatelessWidget {
   const _ExecutionTile({required this.execution});
 
-  final _Execution execution;
+  final KisOrderActivityItem execution;
 
   @override
   Widget build(BuildContext context) {
+    final sideText = execution.isBuy ? '매수' : '매도';
+    final executionPrice =
+        execution.averagePrice > 0 ? execution.averagePrice : execution.price;
     return _DataTile(
       leading: _IconBadge(
         icon: Icons.done_all_rounded,
-        color: execution.side == _TradeSide.buy
-            ? MetaServerColors.green
-            : MetaServerColors.danger,
+        color:
+            execution.isBuy ? MetaServerColors.green : MetaServerColors.danger,
       ),
       title: execution.name,
       subtitle:
-          '${execution.symbol} · ${execution.side == _TradeSide.buy ? '매수' : '매도'} · ${execution.time}',
+          '${execution.symbol} · $sideText · ${_formatOrderTime(execution.orderTime)}',
       trailing: Column(
         crossAxisAlignment: CrossAxisAlignment.end,
         mainAxisSize: MainAxisSize.min,
         children: [
           Text(
-            '${execution.quantity}주',
+            '${_formatQuantity(execution.filledQuantity)}주',
             style: const TextStyle(fontWeight: FontWeight.w900),
           ),
           const SizedBox(height: 4),
           Text(
-            _won(execution.price),
+            executionPrice > 0 ? _won(executionPrice) : '--',
             style: TextStyle(
               color: MetaServerColors.ink.withValues(alpha: 0.62),
               fontSize: 12,
@@ -3643,44 +3731,6 @@ List<double> _jsonDoubleList(Object? value) {
   ];
 }
 
-class _Order {
-  const _Order({
-    required this.symbol,
-    required this.name,
-    required this.side,
-    required this.quantity,
-    required this.filled,
-    required this.price,
-    required this.status,
-  });
-
-  final String symbol;
-  final String name;
-  final _TradeSide side;
-  final int quantity;
-  final int filled;
-  final double price;
-  final String status;
-}
-
-class _Execution {
-  const _Execution({
-    required this.symbol,
-    required this.name,
-    required this.side,
-    required this.quantity,
-    required this.price,
-    required this.time,
-  });
-
-  final String symbol;
-  final String name;
-  final _TradeSide side;
-  final int quantity;
-  final double price;
-  final String time;
-}
-
 class _StockCatalogItem {
   const _StockCatalogItem({
     required this.market,
@@ -3923,54 +3973,6 @@ const _defaultInstruments = [
   ),
 ];
 
-const _openOrders = [
-  _Order(
-    symbol: '005930',
-    name: '삼성전자',
-    side: _TradeSide.buy,
-    quantity: 10,
-    filled: 4,
-    price: 74100,
-    status: '부분체결',
-  ),
-  _Order(
-    symbol: '247540',
-    name: '에코프로비엠',
-    side: _TradeSide.sell,
-    quantity: 3,
-    filled: 0,
-    price: 201000,
-    status: '접수',
-  ),
-];
-
-const _executions = [
-  _Execution(
-    symbol: '000660',
-    name: 'SK하이닉스',
-    side: _TradeSide.buy,
-    quantity: 2,
-    price: 181800,
-    time: '09:34:18',
-  ),
-  _Execution(
-    symbol: '005930',
-    name: '삼성전자',
-    side: _TradeSide.buy,
-    quantity: 4,
-    price: 74100,
-    time: '09:41:02',
-  ),
-  _Execution(
-    symbol: '035420',
-    name: 'NAVER',
-    side: _TradeSide.sell,
-    quantity: 1,
-    price: 215000,
-    time: '10:12:44',
-  ),
-];
-
 _Instrument _instrumentForHolding(
   List<_Instrument> instruments,
   KisHolding holding,
@@ -4029,6 +4031,19 @@ String _signedPercent(num value) {
 String _formatQuantity(num value) {
   if (value == value.roundToDouble()) return _comma(value.round());
   return value.toStringAsFixed(2);
+}
+
+String _formatOrderTime(String? value) {
+  final digits = value?.replaceAll(RegExp(r'[^0-9]'), '') ?? '';
+  if (digits.length >= 6) {
+    return '${digits.substring(0, 2)}:${digits.substring(2, 4)}:${digits.substring(4, 6)}';
+  }
+  return value?.trim().isNotEmpty == true ? value!.trim() : '--';
+}
+
+String _orderNoSuffix(String? orderNo) {
+  if (orderNo == null || orderNo.trim().isEmpty) return '';
+  return ' · 주문번호 ${orderNo.trim()}';
 }
 
 bool _hasDisplayQuote(_Instrument instrument) {

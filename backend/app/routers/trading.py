@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
@@ -14,6 +16,7 @@ from app.schemas.trading import (
     DomesticStockSearchItem,
     DomesticStockSearchResponse,
     KisConnectionStatusResponse,
+    KisOrderActivityResponse,
     KisPortfolioResponse,
 )
 from app.services.krx_directory import krx_stock_directory
@@ -118,6 +121,28 @@ def kis_portfolio(
     del principal
     try:
         return get_kis_client().portfolio(environment=environment)
+    except (KisConfigurationError, KisApiError) as exc:
+        _raise_kis_error(exc)
+        raise
+
+
+@router.get("/kis/order-activity", response_model=KisOrderActivityResponse)
+def kis_order_activity(
+    principal: FirebasePrincipal = Depends(get_current_principal),
+    environment: BrokerEnvironment | None = None,
+    days: int = Query(default=1, ge=1, le=90),
+    symbol: str = Query(default="", max_length=12),
+) -> KisOrderActivityResponse:
+    del principal
+    end = datetime.now(ZoneInfo("Asia/Seoul")).date()
+    start = end - timedelta(days=days - 1)
+    try:
+        return get_kis_client().order_activity(
+            environment=environment,
+            start_date=start,
+            end_date=end,
+            symbol=symbol,
+        )
     except (KisConfigurationError, KisApiError) as exc:
         _raise_kis_error(exc)
         raise

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, time, timedelta
+from datetime import date, datetime, time, timedelta
 from decimal import Decimal, InvalidOperation
 from functools import lru_cache
 from threading import Lock
@@ -17,6 +17,8 @@ from app.schemas.trading import (
     DomesticStockOrderResponse,
     DomesticStockQuoteResponse,
     KisConnectionStatusResponse,
+    KisOrderActivityItem,
+    KisOrderActivityResponse,
     KisPortfolioHolding,
     KisPortfolioResponse,
     OrderKind,
@@ -70,6 +72,7 @@ class KisClient:
     QUOTE_PATH = "/uapi/domestic-stock/v1/quotations/inquire-price"
     ORDER_PATH = "/uapi/domestic-stock/v1/trading/order-cash"
     BALANCE_PATH = "/uapi/domestic-stock/v1/trading/inquire-balance"
+    ORDER_ACTIVITY_PATH = "/uapi/domestic-stock/v1/trading/inquire-daily-ccld"
     KST = ZoneInfo("Asia/Seoul")
     REGULAR_SESSION_START = time(9, 0)
     REGULAR_SESSION_END = time(15, 30)
@@ -296,6 +299,91 @@ class KisClient:
             profit_loss_rate=profit_loss_rate,
             orderable_cash=orderable_cash,
             raw_summary=output2,
+        )
+
+    def order_activity(
+        self,
+        environment: BrokerEnvironment | None = None,
+        *,
+        start_date: date | None = None,
+        end_date: date | None = None,
+        symbol: str = "",
+    ) -> KisOrderActivityResponse:
+        env = environment or BrokerEnvironment(self._settings.kis_default_environment)
+        credentials = self._credentials(env)
+        today = datetime.now(self.KST).date()
+        end = end_date or today
+        start = start_date or end
+        if start > end:
+            start, end = end, start
+
+        params = {
+            "CANO": credentials.account_no,
+            "ACNT_PRDT_CD": credentials.product_code,
+            "INQR_STRT_DT": start.strftime("%Y%m%d"),
+            "INQR_END_DT": end.strftime("%Y%m%d"),
+            "SLL_BUY_DVSN_CD": "00",
+            "INQR_DVSN": "01",
+            "PDNO": symbol.strip().upper(),
+            "CCLD_DVSN": "00",
+            "ORD_GNO_BRNO": "",
+            "ODNO": "",
+            "INQR_DVSN_3": "00",
+            "INQR_DVSN_1": "",
+            "CTX_AREA_FK100": "",
+            "CTX_AREA_NK100": "",
+            "EXCG_ID_DVSN_CD": "KRX",
+        }
+
+        raw_items: list[dict[str, Any]] = []
+        summaries: list[dict[str, Any]] = []
+        tr_cont = ""
+        for _ in range(10):
+            data, response_headers = self._request_with_headers(
+                credentials,
+                "GET",
+                self.ORDER_ACTIVITY_PATH,
+                tr_id=self._daily_ccld_tr_id(env),
+                tr_cont=tr_cont,
+                params=params,
+            )
+            raw_items.extend(self._as_list(data.get("output1")))
+            page_summary = self._as_dict(data.get("output2"))
+            if page_summary:
+                summaries.append(page_summary)
+
+            next_tr_cont = str(response_headers.get("tr_cont") or "").strip()
+            if next_tr_cont not in {"F", "M"}:
+                break
+
+            params["CTX_AREA_FK100"] = self._context_value(
+                data, page_summary, "ctx_area_fk100"
+            )
+            params["CTX_AREA_NK100"] = self._context_value(
+                data, page_summary, "ctx_area_nk100"
+            )
+            if not params["CTX_AREA_FK100"] and not params["CTX_AREA_NK100"]:
+                break
+            tr_cont = "N"
+
+        items = [self._activity_item(item) for item in raw_items]
+        open_orders = [
+            item
+            for item in items
+            if item.remaining_quantity > 0
+            and not item.canceled
+            and item.status != "거부"
+        ]
+        executions = [item for item in items if item.filled_quantity > 0]
+
+        return KisOrderActivityResponse(
+            environment=env,
+            account_no_masked=self._mask_full_account(credentials),
+            start_date=start,
+            end_date=end,
+            open_orders=open_orders,
+            executions=executions,
+            raw_summary=summaries[0] if summaries else {},
         )
 
     def place_domestic_stock_order(
@@ -582,6 +670,92 @@ class KisClient:
         return "VTTC8434R"
 
     @staticmethod
+    def _daily_ccld_tr_id(environment: BrokerEnvironment) -> str:
+        if environment == BrokerEnvironment.live:
+            return "TTTC8001R"
+        return "VTTC8001R"
+
+    def _activity_item(self, item: dict[str, Any]) -> KisOrderActivityItem:
+        quantity = self._decimal(item.get("ord_qty")) or Decimal("0")
+        filled_quantity = self._decimal(item.get("tot_ccld_qty")) or Decimal("0")
+        canceled_quantity = self._decimal(item.get("cnc_cfrm_qty")) or Decimal("0")
+        rejected_quantity = self._decimal(item.get("rjct_qty")) or Decimal("0")
+        remaining_quantity = self._decimal(item.get("rmn_qty"))
+        if remaining_quantity is None:
+            remaining_quantity = (
+                quantity - filled_quantity - canceled_quantity - rejected_quantity
+            )
+            if remaining_quantity < 0:
+                remaining_quantity = Decimal("0")
+
+        canceled = str(item.get("cncl_yn") or "").upper() == "Y"
+        status = self._activity_status(
+            quantity=quantity,
+            filled_quantity=filled_quantity,
+            remaining_quantity=remaining_quantity,
+            canceled_quantity=canceled_quantity,
+            rejected_quantity=rejected_quantity,
+            canceled=canceled,
+            fallback=str(item.get("ccld_cndt_name") or "").strip(),
+        )
+
+        return KisOrderActivityItem(
+            order_date=self._clean_string(item.get("ord_dt")),
+            order_time=self._clean_string(item.get("ord_tmd")),
+            order_no=self._clean_string(item.get("odno")),
+            branch_no=self._clean_string(item.get("ord_gno_brno")),
+            original_order_no=self._clean_string(item.get("orgn_odno")),
+            symbol=str(item.get("pdno") or ""),
+            name=str(item.get("prdt_name") or item.get("pdno") or ""),
+            side=self._activity_side(item),
+            order_kind_name=self._clean_string(item.get("ord_dvsn_name")),
+            status=status,
+            quantity=quantity,
+            filled_quantity=filled_quantity,
+            remaining_quantity=remaining_quantity,
+            canceled_quantity=canceled_quantity,
+            rejected_quantity=rejected_quantity,
+            price=self._decimal(item.get("ord_unpr")),
+            average_price=self._decimal(item.get("avg_prvs")),
+            executed_amount=self._decimal(item.get("tot_ccld_amt")),
+            canceled=canceled,
+            raw_output=item,
+        )
+
+    @staticmethod
+    def _activity_side(item: dict[str, Any]) -> OrderSide:
+        code = str(item.get("sll_buy_dvsn_cd") or "").strip()
+        name = str(item.get("sll_buy_dvsn_cd_name") or "")
+        if code == "01" or "매도" in name:
+            return OrderSide.sell
+        return OrderSide.buy
+
+    @staticmethod
+    def _activity_status(
+        *,
+        quantity: Decimal,
+        filled_quantity: Decimal,
+        remaining_quantity: Decimal,
+        canceled_quantity: Decimal,
+        rejected_quantity: Decimal,
+        canceled: bool,
+        fallback: str,
+    ) -> str:
+        if canceled or canceled_quantity > 0:
+            return "취소"
+        if rejected_quantity > 0 and filled_quantity <= 0:
+            return "거부"
+        if remaining_quantity > 0 and filled_quantity > 0:
+            return "부분체결"
+        if remaining_quantity > 0:
+            return "미체결"
+        if quantity > 0 and filled_quantity >= quantity:
+            return "체결"
+        if filled_quantity > 0:
+            return "체결"
+        return fallback or "접수"
+
+    @staticmethod
     def _order_division(payload: DomesticStockOrderRequest) -> str:
         if payload.order_kind == OrderKind.market:
             return "01"
@@ -707,6 +881,13 @@ class KisClient:
             return Decimal(str(value).replace(",", ""))
         except (InvalidOperation, ValueError):
             return None
+
+    @staticmethod
+    def _clean_string(value: Any) -> str | None:
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
 
     @staticmethod
     def _decimal_as_api_int(value: Decimal | None) -> str:

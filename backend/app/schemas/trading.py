@@ -389,3 +389,36 @@ class DomesticStockOrderResponse(BaseModel):
     kis_message: str | None = None
     request_payload: dict[str, Any] = Field(default_factory=dict)
     raw_output: dict[str, Any] = Field(default_factory=dict)
+
+
+class KisOrderActivityItem(BaseModel):
+    order_date: str | None = None
+    order_time: str | None = None
+    order_no: str | None = None
+    branch_no: str | None = None
+    original_order_no: str | None = None
+    symbol: str
+    name: str
+    side: OrderSide
+    order_kind_name: str | None = None
+    status: str
+    quantity: Decimal = Decimal("0")
+    filled_quantity: Decimal = Decimal("0")
+    remaining_quantity: Decimal = Decimal("0")
+    canceled_quantity: Decimal = Decimal("0")
+    rejected_quantity: Decimal = Decimal("0")
+    price: Decimal | None = None
+    average_price: Decimal | None = None
+    executed_amount: Decimal | None = None
+    canceled: bool = False
+    raw_output: dict[str, Any] = Field(default_factory=dict)
+
+
+class KisOrderActivityResponse(BaseModel):
+    environment: BrokerEnvironment
+    account_no_masked: str
+    start_date: date
+    end_date: date
+    open_orders: list[KisOrderActivityItem]
+    executions: list[KisOrderActivityItem]
+    raw_summary: dict[str, Any] = Field(default_factory=dict)

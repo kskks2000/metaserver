@@ -21,6 +21,12 @@ class TradingRepository {
     return KisPortfolio.fromJson(data);
   }
 
+  Future<KisOrderActivity> loadKisOrderActivity({int days = 1}) async {
+    final data =
+        await _apiClient.getJson('/trading/kis/order-activity?days=$days');
+    return KisOrderActivity.fromJson(data);
+  }
+
   Future<DomesticStockQuote> loadQuote(
     String symbol, {
     String marketCode = 'J',
@@ -173,6 +179,92 @@ class KisHolding {
   }
 }
 
+class KisOrderActivity {
+  const KisOrderActivity({
+    required this.environment,
+    required this.accountNoMasked,
+    required this.openOrders,
+    required this.executions,
+  });
+
+  final String environment;
+  final String accountNoMasked;
+  final List<KisOrderActivityItem> openOrders;
+  final List<KisOrderActivityItem> executions;
+
+  factory KisOrderActivity.fromJson(Map<String, dynamic> json) {
+    return KisOrderActivity(
+      environment: json['environment']?.toString() ?? 'paper',
+      accountNoMasked: json['account_no_masked']?.toString() ?? '',
+      openOrders: _activityItems(json['open_orders']),
+      executions: _activityItems(json['executions']),
+    );
+  }
+}
+
+class KisOrderActivityItem {
+  const KisOrderActivityItem({
+    required this.symbol,
+    required this.name,
+    required this.side,
+    required this.status,
+    required this.quantity,
+    required this.filledQuantity,
+    required this.remainingQuantity,
+    required this.price,
+    required this.averagePrice,
+    this.orderDate,
+    this.orderTime,
+    this.orderNo,
+    this.orderKindName,
+  });
+
+  final String symbol;
+  final String name;
+  final String side;
+  final String status;
+  final int quantity;
+  final int filledQuantity;
+  final int remainingQuantity;
+  final double price;
+  final double averagePrice;
+  final String? orderDate;
+  final String? orderTime;
+  final String? orderNo;
+  final String? orderKindName;
+
+  bool get isBuy => side == 'buy';
+
+  factory KisOrderActivityItem.fromJson(Map<String, dynamic> json) {
+    return KisOrderActivityItem(
+      symbol: json['symbol']?.toString() ?? '',
+      name: json['name']?.toString() ?? '',
+      side: json['side']?.toString() ?? '',
+      status: json['status']?.toString() ?? '',
+      quantity: _asInt(json['quantity']),
+      filledQuantity: _asInt(json['filled_quantity']),
+      remainingQuantity: _asInt(json['remaining_quantity']),
+      price: _asDouble(json['price']) ?? 0,
+      averagePrice: _asDouble(json['average_price']) ?? 0,
+      orderDate: json['order_date']?.toString(),
+      orderTime: json['order_time']?.toString(),
+      orderNo: json['order_no']?.toString(),
+      orderKindName: json['order_kind_name']?.toString(),
+    );
+  }
+}
+
+List<KisOrderActivityItem> _activityItems(Object? value) {
+  if (value is! List) return const [];
+  return [
+    for (final item in value)
+      if (item is Map<String, dynamic>)
+        KisOrderActivityItem.fromJson(item)
+      else if (item is Map)
+        KisOrderActivityItem.fromJson(Map<String, dynamic>.from(item)),
+  ];
+}
+
 class DomesticStockSearchResult {
   const DomesticStockSearchResult({
     required this.market,
@@ -313,5 +405,6 @@ double? _asDouble(Object? value) {
 int _asInt(Object? value) {
   if (value is int) return value;
   if (value is num) return value.toInt();
-  return int.tryParse(value?.toString() ?? '') ?? 0;
+  final text = value?.toString().replaceAll(',', '') ?? '';
+  return int.tryParse(text) ?? double.tryParse(text)?.round() ?? 0;
 }
