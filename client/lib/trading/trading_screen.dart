@@ -32,6 +32,10 @@ class _TradingScreenState extends ConsumerState<TradingScreen> {
   late String _selectedGroupId;
   late List<_Instrument> _instruments;
   late _Instrument _selectedInstrument;
+  late Future<KisPortfolio> _portfolioFuture;
+  KisPortfolio? _cachedPortfolio;
+  late Future<KisConnectionStatus> _kisStatusFuture;
+  KisConnectionStatus? _cachedKisStatus;
   bool _quoteLoading = false;
 
   @override
@@ -41,6 +45,8 @@ class _TradingScreenState extends ConsumerState<TradingScreen> {
     _selectedGroupId = _watchlistGroups.first.id;
     _instruments = List<_Instrument>.of(_watchlistGroups.first.instruments);
     _selectedInstrument = _instruments.first;
+    _portfolioFuture = _loadPortfolio();
+    _kisStatusFuture = _loadKisStatus();
     Future.microtask(() => _refreshWatchlistQuotes(showMessage: false));
   }
 
@@ -79,9 +85,8 @@ class _TradingScreenState extends ConsumerState<TradingScreen> {
     try {
       final decoded = jsonDecode(saved);
       if (decoded is! List) return instruments;
-      final defaultSymbols = _defaultInstruments
-          .map((instrument) => instrument.symbol)
-          .toSet();
+      final defaultSymbols =
+          _defaultInstruments.map((instrument) => instrument.symbol).toSet();
       for (final item in decoded) {
         if (item is! Map) continue;
         final instrument = _Instrument.fromJson(
@@ -151,6 +156,35 @@ class _TradingScreenState extends ConsumerState<TradingScreen> {
     });
   }
 
+  Future<KisPortfolio> _loadPortfolio() async {
+    final portfolio =
+        await ref.read(tradingRepositoryProvider).loadKisPortfolio();
+    if (mounted) {
+      setState(() {
+        _cachedPortfolio = portfolio;
+      });
+    }
+    return portfolio;
+  }
+
+  Future<KisConnectionStatus> _loadKisStatus() async {
+    final status = await ref.read(tradingRepositoryProvider).loadKisStatus();
+    if (mounted) {
+      setState(() {
+        _cachedKisStatus = status;
+      });
+    }
+    return status;
+  }
+
+  Future<void> _refreshTradingData() async {
+    setState(() {
+      _portfolioFuture = _loadPortfolio();
+      _kisStatusFuture = _loadKisStatus();
+    });
+    await _refreshWatchlistQuotes();
+  }
+
   Future<void> _refreshSelectedQuote({bool showMessage = true}) async {
     if (_quoteLoading) return;
     setState(() => _quoteLoading = true);
@@ -192,29 +226,27 @@ class _TradingScreenState extends ConsumerState<TradingScreen> {
     if (_quoteLoading) return;
     setState(() => _quoteLoading = true);
     var refreshedCount = 0;
+    final refreshingGroupId = _selectedGroupId;
+    final instrumentsSnapshot = List<_Instrument>.of(_instruments);
+    final refreshedInstruments = List<_Instrument>.of(instrumentsSnapshot);
+    var refreshedSelectedInstrument = _selectedInstrument;
     try {
       final repository = ref.read(tradingRepositoryProvider);
-      for (var index = 0; index < _instruments.length; index++) {
-        final instrument = _instruments[index];
+      for (var index = 0; index < instrumentsSnapshot.length; index++) {
+        final instrument = instrumentsSnapshot[index];
         try {
           final quote = await repository.loadQuote(instrument.symbol);
           if (!mounted) return;
           final updated = _mergeQuote(instrument, quote);
           refreshedCount += 1;
-          setState(() {
-            _replaceSelectedGroupInstruments([
-              for (final current in _instruments)
-                if (current.symbol == updated.symbol) updated else current,
-            ]);
-            if (_selectedInstrument.symbol == updated.symbol) {
-              _selectedInstrument = updated;
-            }
-          });
-          _saveWatchlistGroups();
+          refreshedInstruments[index] = updated;
+          if (refreshedSelectedInstrument.symbol == updated.symbol) {
+            refreshedSelectedInstrument = updated;
+          }
         } catch (_) {
           // Keep showing the last known value for this symbol and continue.
         }
-        if (index < _instruments.length - 1) {
+        if (index < instrumentsSnapshot.length - 1) {
           await Future<void>.delayed(const Duration(milliseconds: 450));
         }
       }
@@ -222,11 +254,18 @@ class _TradingScreenState extends ConsumerState<TradingScreen> {
       if (refreshedCount == 0) {
         throw StateError('No KIS quotes were refreshed.');
       }
+      if (_selectedGroupId == refreshingGroupId) {
+        setState(() {
+          _replaceSelectedGroupInstruments(refreshedInstruments);
+          _selectedInstrument = refreshedSelectedInstrument;
+        });
+        _saveWatchlistGroups();
+      }
       if (showMessage) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
-              refreshedCount == _instruments.length
+              refreshedCount == instrumentsSnapshot.length
                   ? 'KIS 현재가를 갱신했습니다.'
                   : '일부 종목 현재가를 갱신했습니다.',
             ),
@@ -243,6 +282,7 @@ class _TradingScreenState extends ConsumerState<TradingScreen> {
           context,
         ).showSnackBar(SnackBar(content: Text(message)));
       }
+      return;
     } finally {
       if (mounted) setState(() => _quoteLoading = false);
     }
@@ -405,9 +445,8 @@ class _TradingScreenState extends ConsumerState<TradingScreen> {
     );
     if (confirmed != true || !mounted) return;
 
-    final remaining = _watchlistGroups
-        .where((item) => item.id != group.id)
-        .toList();
+    final remaining =
+        _watchlistGroups.where((item) => item.id != group.id).toList();
     final nextGroup = remaining.first;
     setState(() {
       _watchlistGroups = remaining;
@@ -444,7 +483,12 @@ class _TradingScreenState extends ConsumerState<TradingScreen> {
   @override
   Widget build(BuildContext context) {
     final tabs = [
-      _TradingHomeTab(instruments: _instruments, onOrder: _openOrder),
+      _TradingHomeTab(
+        instruments: _instruments,
+        portfolioFuture: _portfolioFuture,
+        cachedPortfolio: _cachedPortfolio,
+        onOrder: _openOrder,
+      ),
       _MarketTab(
         groups: _watchlistGroups,
         selectedGroupId: _selectedGroupId,
@@ -469,7 +513,10 @@ class _TradingScreenState extends ConsumerState<TradingScreen> {
         onSideChanged: (side) => setState(() => _tradeSide = side),
       ),
       const _ActivityTab(),
-      const _TradingAccountTab(),
+      _TradingAccountTab(
+        statusFuture: _kisStatusFuture,
+        cachedStatus: _cachedKisStatus,
+      ),
     ];
 
     return Scaffold(
@@ -489,7 +536,7 @@ class _TradingScreenState extends ConsumerState<TradingScreen> {
           _ToolbarIconButton(
             tooltip: '새로고침',
             icon: Icons.refresh_rounded,
-            onPressed: () => _refreshWatchlistQuotes(),
+            onPressed: () => _refreshTradingData(),
           ),
           const SizedBox(width: 8),
           _ToolbarIconButton(
@@ -809,7 +856,9 @@ class _AddInstrumentDialogState extends ConsumerState<_AddInstrumentDialog> {
                       children: [
                         Text(
                           '관심종목 추가',
-                          style: Theme.of(context).textTheme.titleLarge
+                          style: Theme.of(context)
+                              .textTheme
+                              .titleLarge
                               ?.copyWith(fontWeight: FontWeight.w900),
                         ),
                         const SizedBox(height: 3),
@@ -1213,22 +1262,28 @@ class _ManualInstrumentForm extends StatelessWidget {
 }
 
 class _TradingHomeTab extends ConsumerWidget {
-  const _TradingHomeTab({required this.instruments, required this.onOrder});
+  const _TradingHomeTab({
+    required this.instruments,
+    required this.portfolioFuture,
+    required this.cachedPortfolio,
+    required this.onOrder,
+  });
 
   final List<_Instrument> instruments;
+  final Future<KisPortfolio> portfolioFuture;
+  final KisPortfolio? cachedPortfolio;
   final void Function(_Instrument instrument, _TradeSide side) onOrder;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     return _ScreenScroll(
       child: FutureBuilder<KisPortfolio>(
-        future: ref.read(tradingRepositoryProvider).loadKisPortfolio(),
+        future: portfolioFuture,
         builder: (context, snapshot) {
-          final portfolio = snapshot.data;
-          final loading =
-              snapshot.connectionState == ConnectionState.waiting &&
+          final portfolio = snapshot.data ?? cachedPortfolio;
+          final loading = snapshot.connectionState == ConnectionState.waiting &&
               portfolio == null;
-          final errorMessage = snapshot.hasError
+          final errorMessage = snapshot.hasError && portfolio == null
               ? (apiFailureMessage(snapshot.error!) ?? 'KIS 잔고 조회에 실패했습니다.')
               : null;
 
@@ -1409,7 +1464,7 @@ class _OrderTicketTabState extends ConsumerState<_OrderTicketTab> {
   Widget build(BuildContext context) {
     final quantity =
         int.tryParse(_quantityController.text.replaceAll(',', '')) ?? 0;
-    final livePrice = _hasDisplayQuote(widget.instrument);
+    final livePrice = _hasLiveQuote(widget.instrument);
     final price = _marketOrder
         ? (livePrice ? widget.instrument.price : 0.0)
         : double.tryParse(_priceController.text.replaceAll(',', '')) ?? 0;
@@ -1623,13 +1678,12 @@ class _OrderTicketTabState extends ConsumerState<_OrderTicketTab> {
     final limitPrice = _marketOrder
         ? null
         : int.tryParse(_priceController.text.replaceAll(',', ''));
-    final orderPrice = _marketOrder
-        ? widget.instrument.price
-        : (limitPrice ?? 0).toDouble();
+    final orderPrice =
+        _marketOrder ? widget.instrument.price : (limitPrice ?? 0).toDouble();
     final validationMessage = _orderValidationMessage(
       quantity: quantity,
       price: orderPrice,
-      livePrice: _hasDisplayQuote(widget.instrument),
+      livePrice: _hasLiveQuote(widget.instrument),
     );
     if (validationMessage != null) {
       ScaffoldMessenger.of(
@@ -1639,9 +1693,7 @@ class _OrderTicketTabState extends ConsumerState<_OrderTicketTab> {
     }
     setState(() => _submitting = true);
     try {
-      final result = await ref
-          .read(tradingRepositoryProvider)
-          .placeOrder(
+      final result = await ref.read(tradingRepositoryProvider).placeOrder(
             DomesticStockOrderDraft(
               side: _side == _TradeSide.buy ? 'buy' : 'sell',
               symbol: widget.instrument.symbol,
@@ -1661,8 +1713,8 @@ class _OrderTicketTabState extends ConsumerState<_OrderTicketTab> {
       final message = detail != null
           ? 'KIS 주문 전송 실패: $detail'
           : isRecoverableApiFailure(error)
-          ? 'KIS 주문 전송에 실패했습니다. 키, 계좌, 실전주문 허용 설정을 확인해 주세요.'
-          : error.toString();
+              ? 'KIS 주문 전송에 실패했습니다. 키, 계좌, 실전주문 허용 설정을 확인해 주세요.'
+              : error.toString();
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(SnackBar(content: Text(message)));
@@ -1780,18 +1832,26 @@ class _ActivityTab extends StatelessWidget {
 }
 
 class _TradingAccountTab extends ConsumerWidget {
-  const _TradingAccountTab();
+  const _TradingAccountTab({
+    required this.statusFuture,
+    required this.cachedStatus,
+  });
+
+  final Future<KisConnectionStatus> statusFuture;
+  final KisConnectionStatus? cachedStatus;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     return _ScreenScroll(
       child: FutureBuilder<KisConnectionStatus>(
-        future: ref.read(tradingRepositoryProvider).loadKisStatus(),
+        future: statusFuture,
         builder: (context, snapshot) {
-          final status = snapshot.data;
-          final loading =
-              snapshot.connectionState == ConnectionState.waiting &&
+          final status = snapshot.data ?? cachedStatus;
+          final loading = snapshot.connectionState == ConnectionState.waiting &&
               status == null;
+          final errorMessage = snapshot.hasError && status == null
+              ? (apiFailureMessage(snapshot.error!) ?? 'KIS 계좌 상태 조회에 실패했습니다.')
+              : null;
           final connected = status?.configured == true;
           final environment = switch (status?.defaultEnvironment) {
             'live' => '실전',
@@ -1814,7 +1874,7 @@ class _TradingAccountTab extends ConsumerWidget {
                     _ConnectionStatus(
                       connected: connected,
                       loading: loading,
-                      message: status?.message,
+                      message: errorMessage ?? status?.message,
                     ),
                     const SizedBox(height: 14),
                     _CredentialRow(
@@ -1834,8 +1894,7 @@ class _TradingAccountTab extends ConsumerWidget {
                     _CredentialRow(
                       icon: Icons.account_balance_wallet_outlined,
                       title: '계좌번호',
-                      value:
-                          accountLabel ??
+                      value: accountLabel ??
                           (loading ? '불러오는 중' : '계좌 설정을 확인해 주세요'),
                       status: environment,
                     ),
@@ -1917,8 +1976,8 @@ class _AccountSummaryPanel extends StatelessWidget {
     final headline = loading
         ? '조회 중'
         : errorMessage != null
-        ? '조회 실패'
-        : _won(totalEvaluation);
+            ? '조회 실패'
+            : _won(totalEvaluation);
 
     return Container(
       padding: const EdgeInsets.all(20),
@@ -1956,9 +2015,9 @@ class _AccountSummaryPanel extends StatelessWidget {
                   Text(
                     headline,
                     style: Theme.of(context).textTheme.headlineMedium?.copyWith(
-                      color: Colors.white,
-                      fontWeight: FontWeight.w900,
-                    ),
+                          color: Colors.white,
+                          fontWeight: FontWeight.w900,
+                        ),
                   ),
                 ],
               ),
@@ -2375,9 +2434,9 @@ class _Panel extends StatelessWidget {
                 child: Text(
                   title,
                   style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                    color: MetaServerColors.ink,
-                    fontWeight: FontWeight.w900,
-                  ),
+                        color: MetaServerColors.ink,
+                        fontWeight: FontWeight.w900,
+                      ),
                 ),
               ),
               if (trailing != null) trailing!,
@@ -2504,8 +2563,8 @@ class _SummaryMetric extends StatelessWidget {
     final color = positive == null
         ? Colors.white
         : positive == true
-        ? MetaServerColors.mint
-        : const Color(0xFFFF8A8A);
+            ? MetaServerColors.mint
+            : const Color(0xFFFF8A8A);
     return Container(
       constraints: const BoxConstraints(minWidth: 126),
       padding: const EdgeInsets.all(12),
@@ -2616,8 +2675,8 @@ class _InstrumentTile extends StatelessWidget {
         color: !hasQuote
             ? MetaServerColors.ink.withValues(alpha: 0.42)
             : instrument.changeRate >= 0
-            ? MetaServerColors.green
-            : MetaServerColors.danger,
+                ? MetaServerColors.green
+                : MetaServerColors.danger,
       ),
       title: instrument.name,
       subtitle:
@@ -2803,8 +2862,8 @@ class _SelectedInstrumentHeader extends StatelessWidget {
             color: !hasQuote
                 ? Colors.white.withValues(alpha: 0.58)
                 : instrument.changeRate >= 0
-                ? MetaServerColors.mint
-                : const Color(0xFFFF8A8A),
+                    ? MetaServerColors.mint
+                    : const Color(0xFFFF8A8A),
           ),
           const SizedBox(width: 12),
           Expanded(
@@ -3303,8 +3362,8 @@ class _ConnectionStatus extends StatelessWidget {
     final text = loading
         ? 'KIS 계좌 연결 확인 중'
         : connected
-        ? 'KIS 실전투자 계좌 연결 완료'
-        : (message ?? 'KIS 계좌 연결 설정을 확인해 주세요');
+            ? 'KIS 실전투자 계좌 연결 완료'
+            : (message ?? 'KIS 계좌 연결 설정을 확인해 주세요');
     return Container(
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
@@ -3420,9 +3479,8 @@ class _WatchlistGroup {
     return {
       'id': id,
       'name': name,
-      'instruments': instruments
-          .map((instrument) => instrument.toJson())
-          .toList(),
+      'instruments':
+          instruments.map((instrument) => instrument.toJson()).toList(),
     };
   }
 
@@ -3912,8 +3970,8 @@ _Instrument _instrumentForHolding(
   final price = holding.currentPrice > 0
       ? holding.currentPrice
       : holding.quantity > 0
-      ? holding.evaluationAmount / holding.quantity
-      : 0.0;
+          ? holding.evaluationAmount / holding.quantity
+          : 0.0;
   return _Instrument(
     market: catalogItem?.market ?? 'KOSPI',
     symbol: holding.symbol,
@@ -3955,6 +4013,10 @@ String _formatQuantity(num value) {
 }
 
 bool _hasDisplayQuote(_Instrument instrument) {
+  return instrument.price > 0;
+}
+
+bool _hasLiveQuote(_Instrument instrument) {
   return instrument.hasLiveQuote && instrument.price > 0;
 }
 
