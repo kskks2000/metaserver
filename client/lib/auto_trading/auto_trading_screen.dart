@@ -5,6 +5,7 @@ import 'package:go_router/go_router.dart';
 import '../app/theme.dart';
 import '../core/api_client.dart';
 import '../widgets/brand_mark.dart';
+import '../widgets/thousands_input_formatter.dart';
 import 'auto_trading_repository.dart';
 
 enum _AutoTab { dashboard, strategy, execution, risk }
@@ -591,8 +592,12 @@ class _StrategyTabState extends State<_StrategyTab> {
   final _descriptionController = TextEditingController(
     text: '거래대금 증가와 이동평균 돌파를 함께 확인한 뒤 승인 대기 신호를 생성합니다.',
   );
-  final _maxOrderController = TextEditingController(text: '500000');
-  final _maxLossController = TextEditingController(text: '100000');
+  final _maxOrderController = TextEditingController(
+    text: formatIntegerInputText('500000'),
+  );
+  final _maxLossController = TextEditingController(
+    text: formatIntegerInputText('100000'),
+  );
   String _strategyType = 'momentum';
   int _cooldownSeconds = 90;
 
@@ -711,8 +716,12 @@ class _StrategyTabState extends State<_StrategyTab> {
                             name: _nameController.text.trim(),
                             description: _descriptionController.text.trim(),
                             strategyType: _strategyType,
-                            maxOrderAmount: _maxOrderController.text.trim(),
-                            maxDailyLossAmount: _maxLossController.text.trim(),
+                            maxOrderAmount: removeNumberGrouping(
+                              _maxOrderController.text,
+                            ),
+                            maxDailyLossAmount: removeNumberGrouping(
+                              _maxLossController.text,
+                            ),
                             cooldownSeconds: _cooldownSeconds,
                           ),
                         );
@@ -876,12 +885,15 @@ class _RiskTabState extends State<_RiskTab> {
   }
 
   void _setFromControl(AutoTradingControl control) {
-    _maxSingleController =
-        TextEditingController(text: control.maxSingleOrderAmount);
-    _maxDailyOrderController =
-        TextEditingController(text: control.maxDailyAutoOrderAmount);
-    _maxDailyLossController =
-        TextEditingController(text: control.maxDailyAutoLossAmount);
+    _maxSingleController = TextEditingController(
+      text: formatIntegerInputText(control.maxSingleOrderAmount),
+    );
+    _maxDailyOrderController = TextEditingController(
+      text: formatIntegerInputText(control.maxDailyAutoOrderAmount),
+    );
+    _maxDailyLossController = TextEditingController(
+      text: formatIntegerInputText(control.maxDailyAutoLossAmount),
+    );
     _maxStrategies = control.maxConcurrentStrategies;
     _requireApproval = control.requireSignalApproval;
     _liveTrading = control.liveTradingEnabled;
@@ -965,12 +977,15 @@ class _RiskTabState extends State<_RiskTab> {
                     : () {
                         widget.onSave(
                           widget.control.copyWith(
-                            maxSingleOrderAmount:
-                                _maxSingleController.text.trim(),
-                            maxDailyAutoOrderAmount:
-                                _maxDailyOrderController.text.trim(),
-                            maxDailyAutoLossAmount:
-                                _maxDailyLossController.text.trim(),
+                            maxSingleOrderAmount: removeNumberGrouping(
+                              _maxSingleController.text,
+                            ),
+                            maxDailyAutoOrderAmount: removeNumberGrouping(
+                              _maxDailyOrderController.text,
+                            ),
+                            maxDailyAutoLossAmount: removeNumberGrouping(
+                              _maxDailyLossController.text,
+                            ),
                             maxConcurrentStrategies: _maxStrategies,
                             requireSignalApproval: _requireApproval,
                             liveTradingEnabled: _liveTrading,
@@ -1582,6 +1597,9 @@ class _TextInput extends StatelessWidget {
     return TextField(
       controller: controller,
       keyboardType: keyboardType,
+      inputFormatters: keyboardType == TextInputType.number
+          ? const [ThousandsSeparatorInputFormatter()]
+          : null,
       minLines: minLines,
       maxLines: minLines == 1 ? 1 : 4,
       decoration: InputDecoration(
@@ -1990,7 +2008,8 @@ String _statusLabel(String status) {
 }
 
 String _won(String? value) {
-  final number = int.tryParse((value ?? '0').split('.').first) ?? 0;
+  final number =
+      int.tryParse(removeNumberGrouping((value ?? '0').split('.').first)) ?? 0;
   return '${_comma(number)}원';
 }
 

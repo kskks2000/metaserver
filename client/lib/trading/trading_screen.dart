@@ -9,6 +9,7 @@ import 'package:go_router/go_router.dart';
 import '../app/theme.dart';
 import '../core/api_client.dart';
 import '../widgets/brand_mark.dart';
+import '../widgets/thousands_input_formatter.dart';
 import 'trading_local_storage.dart';
 import 'trading_repository.dart';
 
@@ -1437,16 +1438,18 @@ class _OrderTicketTabState extends ConsumerState<_OrderTicketTab> {
   void didUpdateWidget(covariant _OrderTicketTab oldWidget) {
     super.didUpdateWidget(oldWidget);
     final nextPriceText = _orderPriceText(widget.instrument);
-    final previousPriceText = _orderPriceText(oldWidget.instrument);
-    final currentPriceText = _priceController.text.replaceAll(',', '').trim();
+    final previousPriceText = removeNumberGrouping(
+      _orderPriceText(oldWidget.instrument),
+    );
+    final currentPriceText = removeNumberGrouping(_priceController.text);
     if (oldWidget.instrument.symbol != widget.instrument.symbol) {
-      _priceController.text = nextPriceText;
+      _setPriceText(nextPriceText);
     } else if (nextPriceText.isNotEmpty &&
         (currentPriceText.isEmpty ||
             currentPriceText == '0' ||
             currentPriceText == '1' ||
             currentPriceText == previousPriceText)) {
-      _priceController.text = nextPriceText;
+      _setPriceText(nextPriceText);
     }
     if (oldWidget.initialSide != widget.initialSide) {
       _side = widget.initialSide;
@@ -1463,11 +1466,11 @@ class _OrderTicketTabState extends ConsumerState<_OrderTicketTab> {
   @override
   Widget build(BuildContext context) {
     final quantity =
-        int.tryParse(_quantityController.text.replaceAll(',', '')) ?? 0;
+        int.tryParse(removeNumberGrouping(_quantityController.text)) ?? 0;
     final livePrice = _hasLiveQuote(widget.instrument);
     final price = _marketOrder
         ? (livePrice ? widget.instrument.price : 0.0)
-        : double.tryParse(_priceController.text.replaceAll(',', '')) ?? 0;
+        : double.tryParse(removeNumberGrouping(_priceController.text)) ?? 0;
     final estimated = quantity * price;
     final validationMessage = _orderValidationMessage(
       quantity: quantity,
@@ -1674,10 +1677,10 @@ class _OrderTicketTabState extends ConsumerState<_OrderTicketTab> {
 
   Future<void> _submitOrder() async {
     final quantity =
-        int.tryParse(_quantityController.text.replaceAll(',', '')) ?? 0;
+        int.tryParse(removeNumberGrouping(_quantityController.text)) ?? 0;
     final limitPrice = _marketOrder
         ? null
-        : int.tryParse(_priceController.text.replaceAll(',', ''));
+        : int.tryParse(removeNumberGrouping(_priceController.text));
     final orderPrice =
         _marketOrder ? widget.instrument.price : (limitPrice ?? 0).toDouble();
     final validationMessage = _orderValidationMessage(
@@ -1725,8 +1728,15 @@ class _OrderTicketTabState extends ConsumerState<_OrderTicketTab> {
 
   String _orderPriceText(_Instrument instrument) {
     return _hasDisplayQuote(instrument)
-        ? instrument.price.toStringAsFixed(0)
+        ? formatIntegerInputText(instrument.price.toStringAsFixed(0))
         : '';
+  }
+
+  void _setPriceText(String value) {
+    _priceController.value = TextEditingValue(
+      text: value,
+      selection: TextSelection.collapsed(offset: value.length),
+    );
   }
 
   String? _orderValidationMessage({
@@ -3276,6 +3286,7 @@ class _NumberField extends StatelessWidget {
       enabled: enabled,
       onChanged: onChanged,
       keyboardType: const TextInputType.numberWithOptions(decimal: false),
+      inputFormatters: const [ThousandsSeparatorInputFormatter()],
       decoration: InputDecoration(labelText: label, suffixText: suffix),
       textAlign: TextAlign.right,
       style: const TextStyle(fontWeight: FontWeight.w900),
