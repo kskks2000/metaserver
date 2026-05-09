@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, time, timedelta
 from decimal import Decimal, InvalidOperation
 from functools import lru_cache
 from threading import Lock
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import httpx
 
@@ -25,6 +26,10 @@ from app.schemas.trading import (
 
 class KisConfigurationError(RuntimeError):
     """Raised when the KIS integration is not ready to make a request."""
+
+
+class KisOrderValidationError(RuntimeError):
+    """Raised before a KIS order is sent when the app cannot support it safely."""
 
 
 class KisApiError(RuntimeError):
@@ -65,6 +70,9 @@ class KisClient:
     QUOTE_PATH = "/uapi/domestic-stock/v1/quotations/inquire-price"
     ORDER_PATH = "/uapi/domestic-stock/v1/trading/order-cash"
     BALANCE_PATH = "/uapi/domestic-stock/v1/trading/inquire-balance"
+    KST = ZoneInfo("Asia/Seoul")
+    REGULAR_SESSION_START = time(9, 0)
+    REGULAR_SESSION_END = time(15, 30)
 
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
@@ -306,6 +314,8 @@ class KisClient:
             )
 
         order_division = payload.order_division_code or self._order_division(payload)
+        if not payload.dry_run:
+            self._validate_supported_order_session(payload, order_division)
         order_price = self._order_price(payload, order_division)
         tr_id = self._order_tr_id(env, payload.side)
         request_payload = self._order_payload(
@@ -576,6 +586,32 @@ class KisClient:
         if payload.order_kind == OrderKind.market:
             return "01"
         return "00"
+
+    def _validate_supported_order_session(
+        self,
+        payload: DomesticStockOrderRequest,
+        order_division: str,
+    ) -> None:
+        if not self._settings.kis_regular_session_only:
+            return
+        if payload.order_kind not in {OrderKind.limit, OrderKind.market}:
+            return
+        if order_division not in {"00", "01"}:
+            return
+
+        now = datetime.now(self.KST)
+        in_weekday = now.weekday() < 5
+        in_regular_session = (
+            self.REGULAR_SESSION_START <= now.time() <= self.REGULAR_SESSION_END
+        )
+        if in_weekday and in_regular_session:
+            return
+
+        raise KisOrderValidationError(
+            "현재 MetaServer는 국내주식 정규장 주문만 지원합니다. "
+            "평일 09:00~15:30(KST)에 지정가/시장가 주문을 전송해 주세요. "
+            f"현재 서버 기준 시간은 {now:%Y-%m-%d %H:%M:%S KST}입니다."
+        )
 
     @staticmethod
     def _order_price(payload: DomesticStockOrderRequest, order_division: str) -> Decimal:

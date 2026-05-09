@@ -62,6 +62,7 @@ class Settings(BaseSettings):
     kis_include_hashkey: bool = True
     kis_order_protocol: Literal["modern", "legacy"] = "modern"
     kis_live_trading_enabled: bool = False
+    kis_regular_session_only: bool = True
 
     @property
     def use_local_user_store(self) -> bool:

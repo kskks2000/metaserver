@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.core.security import get_current_principal
@@ -15,25 +17,39 @@ from app.schemas.trading import (
     KisPortfolioResponse,
 )
 from app.services.krx_directory import krx_stock_directory
-from app.services.kis import KisApiError, KisConfigurationError, get_kis_client
+from app.services.kis import (
+    KisApiError,
+    KisConfigurationError,
+    KisOrderValidationError,
+    get_kis_client,
+)
 
 
 router = APIRouter(prefix="/trading", tags=["trading"])
+logger = logging.getLogger(__name__)
 
 
 def _raise_kis_error(exc: Exception) -> None:
     if isinstance(exc, KisConfigurationError):
         detail = str(exc)
-        status_code = (
-            status.HTTP_403_FORBIDDEN
-            if "Live KIS orders are disabled" in detail
-            else status.HTTP_503_SERVICE_UNAVAILABLE
-        )
-        raise HTTPException(status_code=status_code, detail=detail) from exc
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=detail) from exc
+
+    if isinstance(exc, KisOrderValidationError):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
 
     if isinstance(exc, KisApiError):
+        logger.warning(
+            "KIS API error: status=%s code=%s message=%s payload=%s",
+            exc.status_code,
+            exc.error_code,
+            str(exc),
+            exc.payload,
+        )
         raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
+            status_code=status.HTTP_409_CONFLICT,
             detail={
                 "message": str(exc),
                 "status_code": exc.status_code,
@@ -121,6 +137,6 @@ def place_domestic_stock_order(
     payload.exchange_code = payload.exchange_code.upper()
     try:
         return get_kis_client().place_domestic_stock_order(payload)
-    except (KisConfigurationError, KisApiError) as exc:
+    except (KisConfigurationError, KisOrderValidationError, KisApiError) as exc:
         _raise_kis_error(exc)
         raise
