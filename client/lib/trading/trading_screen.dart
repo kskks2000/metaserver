@@ -155,6 +155,7 @@ class _TradingScreenState extends ConsumerState<TradingScreen> {
       _tradeSide = side;
       _tabIndex = 2;
     });
+    Future.microtask(() => _refreshSelectedQuote(showMessage: false));
   }
 
   Future<KisPortfolio> _loadPortfolio() async {
@@ -1467,6 +1468,7 @@ class _OrderTicketTabState extends ConsumerState<_OrderTicketTab> {
   Widget build(BuildContext context) {
     final quantity =
         int.tryParse(removeNumberGrouping(_quantityController.text)) ?? 0;
+    final referencePriceReady = _hasDisplayQuote(widget.instrument);
     final livePrice = _hasLiveQuote(widget.instrument);
     final price = _marketOrder
         ? (livePrice ? widget.instrument.price : 0.0)
@@ -1476,6 +1478,7 @@ class _OrderTicketTabState extends ConsumerState<_OrderTicketTab> {
       quantity: quantity,
       price: price,
       livePrice: livePrice,
+      referencePriceReady: referencePriceReady,
     );
     final canSubmit = validationMessage == null && !_submitting;
     final sideColor = _side == _TradeSide.buy
@@ -1605,7 +1608,10 @@ class _OrderTicketTabState extends ConsumerState<_OrderTicketTab> {
             icon: Icons.verified_user_outlined,
             child: Column(
               children: [
-                _CheckRow(label: '실시간 시세 기준 가격 확인', checked: livePrice),
+                _CheckRow(
+                  label: '실시간 시세 기준 가격 확인',
+                  checked: referencePriceReady,
+                ),
                 const _CheckRow(label: '계좌 연결 및 토큰 유효성 확인', checked: true),
                 const _CheckRow(label: '일 주문 한도와 손실 한도 확인', checked: true),
                 const _CheckRow(label: '실거래 전 투자위험 고지 동의 필요', checked: false),
@@ -1687,6 +1693,7 @@ class _OrderTicketTabState extends ConsumerState<_OrderTicketTab> {
       quantity: quantity,
       price: orderPrice,
       livePrice: _hasLiveQuote(widget.instrument),
+      referencePriceReady: _hasDisplayQuote(widget.instrument),
     );
     if (validationMessage != null) {
       ScaffoldMessenger.of(
@@ -1743,13 +1750,14 @@ class _OrderTicketTabState extends ConsumerState<_OrderTicketTab> {
     required int quantity,
     required double price,
     required bool livePrice,
+    required bool referencePriceReady,
   }) {
     if (quantity <= 0) return '수량을 1주 이상 입력해 주세요.';
     if (_marketOrder) {
       return livePrice ? null : '시장가 주문은 현재가 조회 후 전송할 수 있습니다.';
     }
     if (price <= 0) return '지정가를 입력해 주세요.';
-    if (!livePrice) return '현재가 조회 후 주문 가격을 다시 확인해 주세요.';
+    if (!referencePriceReady) return '현재가 조회 후 주문 가격을 다시 확인해 주세요.';
 
     final referencePrice = widget.instrument.price;
     final lowerLimit = referencePrice * 0.7;
