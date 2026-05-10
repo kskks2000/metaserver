@@ -32,7 +32,7 @@ extension _AssetClassMeta on _AssetClass {
 
   Color get accent => switch (this) {
         _AssetClass.domesticStock => MetaServerColors.green,
-        _AssetClass.overseasStock => MetaServerColors.cyan,
+        _AssetClass.overseasStock => const Color(0xFF4768A8),
         _AssetClass.crypto => MetaServerColors.amber,
       };
 
@@ -2868,35 +2868,54 @@ class _AssetClassGlyphPainter extends CustomPainter {
         );
       case _AssetClass.crypto:
         final center = Offset(size.width / 2, size.height / 2);
-        final radius = size.shortestSide * 0.36;
+        final radius = size.shortestSide * 0.34;
+        final backStroke = Paint()
+          ..color = color.withValues(alpha: 0.34)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.25
+          ..strokeCap = StrokeCap.round;
+        canvas.drawOval(
+          Rect.fromCenter(
+            center: Offset(size.width * 0.43, size.height * 0.58),
+            width: size.width * 0.58,
+            height: size.height * 0.30,
+          ),
+          backStroke,
+        );
+        canvas.drawOval(
+          Rect.fromCenter(
+            center: Offset(size.width * 0.45, size.height * 0.52),
+            width: size.width * 0.60,
+            height: size.height * 0.34,
+          ),
+          backStroke,
+        );
         canvas.drawCircle(center, radius, fill);
         canvas.drawCircle(center, radius, stroke);
+        canvas.drawCircle(center, radius * 0.68, backStroke);
         final coin = Path()
-          ..moveTo(size.width * 0.43, size.height * 0.30)
-          ..lineTo(size.width * 0.43, size.height * 0.70)
-          ..moveTo(size.width * 0.39, size.height * 0.36)
-          ..lineTo(size.width * 0.58, size.height * 0.36)
+          ..moveTo(size.width * 0.45, size.height * 0.31)
+          ..lineTo(size.width * 0.45, size.height * 0.69)
+          ..moveTo(size.width * 0.53, size.height * 0.31)
+          ..lineTo(size.width * 0.53, size.height * 0.69)
+          ..moveTo(size.width * 0.38, size.height * 0.38)
+          ..lineTo(size.width * 0.55, size.height * 0.38)
           ..quadraticBezierTo(
-            size.width * 0.70,
-            size.height * 0.36,
-            size.width * 0.70,
-            size.height * 0.47,
+            size.width * 0.67,
+            size.height * 0.38,
+            size.width * 0.67,
+            size.height * 0.49,
           )
           ..quadraticBezierTo(
-            size.width * 0.70,
-            size.height * 0.57,
-            size.width * 0.58,
-            size.height * 0.57,
+            size.width * 0.67,
+            size.height * 0.59,
+            size.width * 0.55,
+            size.height * 0.59,
           )
-          ..lineTo(size.width * 0.40, size.height * 0.57)
-          ..moveTo(size.width * 0.60, size.height * 0.57)
-          ..quadraticBezierTo(
-            size.width * 0.73,
-            size.height * 0.57,
-            size.width * 0.73,
-            size.height * 0.67,
-          );
-        canvas.drawPath(coin, stroke..strokeWidth = 1.6);
+          ..lineTo(size.width * 0.38, size.height * 0.59)
+          ..moveTo(size.width * 0.55, size.height * 0.49)
+          ..lineTo(size.width * 0.39, size.height * 0.49);
+        canvas.drawPath(coin, stroke..strokeWidth = 1.45);
     }
   }
 
