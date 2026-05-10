@@ -84,6 +84,43 @@ class TradingRepository {
     );
     return DomesticStockOrderResult.fromJson(data);
   }
+
+  Future<TradingConsentStatus> loadTradingRiskNoticeConsent() async {
+    final data =
+        await _apiClient.getJson('/trading/consents/trading-risk-notice');
+    return TradingConsentStatus.fromJson(data);
+  }
+
+  Future<TradingConsentStatus> agreeTradingRiskNotice() async {
+    final data = await _apiClient.postJson(
+      '/trading/consents/trading-risk-notice',
+      data: {'agreed': true},
+    );
+    return TradingConsentStatus.fromJson(data);
+  }
+}
+
+class TradingConsentStatus {
+  const TradingConsentStatus({
+    required this.consentType,
+    required this.version,
+    required this.agreed,
+    this.agreedAt,
+  });
+
+  final String consentType;
+  final String version;
+  final bool agreed;
+  final String? agreedAt;
+
+  factory TradingConsentStatus.fromJson(Map<String, dynamic> json) {
+    return TradingConsentStatus(
+      consentType: json['consent_type']?.toString() ?? '',
+      version: json['version']?.toString() ?? '',
+      agreed: json['agreed'] == true,
+      agreedAt: json['agreed_at']?.toString(),
+    );
+  }
 }
 
 class KisConnectionStatus {

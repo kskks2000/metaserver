@@ -19,6 +19,7 @@ from app.schemas.trading import (
     TradeOrderCreate,
     TradingAccountCreate,
     TradingConsentCreate,
+    TradingConsentType,
 )
 
 
@@ -606,6 +607,14 @@ def record_trading_consent(
                 %(user_agent)s,
                 %(raw_payload)s::jsonb
             )
+            ON CONFLICT (user_id, consent_type, version)
+            WHERE revoked_at IS NULL
+            DO UPDATE SET
+                agreed = EXCLUDED.agreed,
+                ip_address = EXCLUDED.ip_address,
+                user_agent = EXCLUDED.user_agent,
+                raw_payload = EXCLUDED.raw_payload,
+                agreed_at = now()
             RETURNING *
             """,
             {
@@ -616,3 +625,41 @@ def record_trading_consent(
         row = cur.fetchone()
     assert row is not None
     return _row(row) or {}
+
+
+def get_trading_consent(
+    conn: Connection,
+    user_id: str,
+    consent_type: TradingConsentType,
+    version: str,
+) -> dict[str, Any] | None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT *
+            FROM trading_consents
+            WHERE user_id = %(user_id)s
+              AND consent_type = %(consent_type)s
+              AND version = %(version)s
+              AND revoked_at IS NULL
+            ORDER BY agreed_at DESC
+            LIMIT 1
+            """,
+            {
+                "user_id": user_id,
+                "consent_type": consent_type.value,
+                "version": version,
+            },
+        )
+        row = cur.fetchone()
+    return _row(row)
+
+
+def has_trading_consent(
+    conn: Connection,
+    user_id: str,
+    consent_type: TradingConsentType,
+    version: str,
+) -> bool:
+    row = get_trading_consent(conn, user_id, consent_type, version)
+    return bool(row and row.get("agreed"))

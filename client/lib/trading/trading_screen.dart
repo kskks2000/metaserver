@@ -1774,6 +1774,9 @@ class _OrderTicketTabState extends ConsumerState<_OrderTicketTab> {
   late _TradeSide _side;
   bool _marketOrder = false;
   bool _submitting = false;
+  bool _riskNoticeAgreed = false;
+  bool _riskNoticeLoading = true;
+  String? _riskNoticeError;
 
   @override
   void initState() {
@@ -1783,6 +1786,7 @@ class _OrderTicketTabState extends ConsumerState<_OrderTicketTab> {
     _priceController = TextEditingController(
       text: _orderPriceText(widget.instrument),
     );
+    unawaited(_loadRiskNoticeConsent());
   }
 
   @override
@@ -1835,7 +1839,8 @@ class _OrderTicketTabState extends ConsumerState<_OrderTicketTab> {
       livePrice: livePrice,
       referencePriceReady: referencePriceReady,
     );
-    final canSubmit = validationMessage == null && !_submitting;
+    final canSubmit =
+        validationMessage == null && !_submitting && !_riskNoticeLoading;
     final sideColor = _side == _TradeSide.buy
         ? MetaServerColors.green
         : MetaServerColors.danger;
@@ -1978,7 +1983,18 @@ class _OrderTicketTabState extends ConsumerState<_OrderTicketTab> {
                 ),
                 const _CheckRow(label: '계좌 연결 및 토큰 유효성 확인', checked: true),
                 const _CheckRow(label: '일 주문 한도와 손실 한도 확인', checked: true),
-                const _CheckRow(label: '실거래 전 투자위험 고지 동의 필요', checked: false),
+                _CheckRow(
+                  label: _riskNoticeAgreed
+                      ? '실거래 전 투자위험 고지 동의 완료'
+                      : _riskNoticeLoading
+                          ? '실거래 전 투자위험 고지 동의 확인 중'
+                          : '실거래 전 투자위험 고지 동의 필요',
+                  checked: _riskNoticeAgreed,
+                ),
+                if (_riskNoticeError != null && !_riskNoticeAgreed) ...[
+                  const SizedBox(height: 10),
+                  _OrderValidationNotice(message: _riskNoticeError!),
+                ],
               ],
             ),
           );
@@ -2000,55 +2016,153 @@ class _OrderTicketTabState extends ConsumerState<_OrderTicketTab> {
     );
   }
 
+  Future<void> _loadRiskNoticeConsent() async {
+    try {
+      final status = await ref
+          .read(tradingRepositoryProvider)
+          .loadTradingRiskNoticeConsent();
+      if (!mounted) return;
+      setState(() {
+        _riskNoticeAgreed = status.agreed;
+        _riskNoticeLoading = false;
+        _riskNoticeError = null;
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _riskNoticeLoading = false;
+        _riskNoticeError =
+            apiFailureMessage(error) ?? '투자위험 고지 동의 상태를 확인하지 못했습니다.';
+      });
+    }
+  }
+
+  Future<bool> _agreeRiskNoticeConsent() async {
+    try {
+      final status =
+          await ref.read(tradingRepositoryProvider).agreeTradingRiskNotice();
+      if (!mounted) return false;
+      setState(() {
+        _riskNoticeAgreed = status.agreed;
+        _riskNoticeLoading = false;
+        _riskNoticeError = null;
+      });
+      return status.agreed;
+    } catch (error) {
+      if (!mounted) return false;
+      final message = apiFailureMessage(error) ?? '투자위험 고지 동의 저장에 실패했습니다.';
+      setState(() {
+        _riskNoticeError = message;
+        _riskNoticeLoading = false;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(message)),
+      );
+      return false;
+    }
+  }
+
   void _showOrderReview(BuildContext context, num estimated) {
     final sideText = _side == _TradeSide.buy ? '매수' : '매도';
+    var riskNoticeAccepted = _riskNoticeAgreed;
+    var savingConsent = false;
     showModalBottomSheet<void>(
       context: context,
+      isScrollControlled: true,
       showDragHandle: true,
       backgroundColor: Colors.white,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(8)),
       ),
       builder: (context) {
-        return Padding(
-          padding: const EdgeInsets.fromLTRB(20, 8, 20, 24),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Text(
-                '$sideText 주문 확인',
-                style: Theme.of(
-                  context,
-                ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w900),
+        return StatefulBuilder(
+          builder: (context, setModalState) {
+            final canSend = riskNoticeAccepted && !savingConsent;
+            return SafeArea(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.fromLTRB(20, 8, 20, 24),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Text(
+                      '$sideText 주문 확인',
+                      style: Theme.of(context)
+                          .textTheme
+                          .titleLarge
+                          ?.copyWith(fontWeight: FontWeight.w900),
+                    ),
+                    const SizedBox(height: 14),
+                    _ReviewRow(
+                      label: '종목',
+                      value:
+                          '${widget.instrument.name} ${widget.instrument.symbol}',
+                    ),
+                    _ReviewRow(label: '구분', value: sideText),
+                    _ReviewRow(
+                      label: '주문금액',
+                      value: _assetMoney(widget.instrument, estimated),
+                    ),
+                    const SizedBox(height: 14),
+                    if (!_riskNoticeAgreed) ...[
+                      _RiskNoticeConsentBox(
+                        checked: riskNoticeAccepted,
+                        onChanged: savingConsent
+                            ? null
+                            : (value) => setModalState(
+                                  () => riskNoticeAccepted = value ?? false,
+                                ),
+                      ),
+                      const SizedBox(height: 14),
+                    ],
+                    FilledButton.icon(
+                      onPressed: canSend
+                          ? () async {
+                              if (!_riskNoticeAgreed) {
+                                setModalState(() => savingConsent = true);
+                                final saved = await _agreeRiskNoticeConsent();
+                                if (!saved) {
+                                  if (context.mounted) {
+                                    setModalState(() => savingConsent = false);
+                                  }
+                                  return;
+                                }
+                              }
+                              if (!context.mounted) return;
+                              Navigator.of(context).pop();
+                              unawaited(_submitOrder());
+                            }
+                          : null,
+                      icon: Icon(
+                        savingConsent
+                            ? Icons.hourglass_top_rounded
+                            : Icons.lock_outline_rounded,
+                      ),
+                      label: Text(
+                        savingConsent
+                            ? '동의 저장 중'
+                            : (_riskNoticeAgreed
+                                ? 'KIS로 주문 전송'
+                                : '동의 후 KIS로 주문 전송'),
+                      ),
+                    ),
+                  ],
+                ),
               ),
-              const SizedBox(height: 14),
-              _ReviewRow(
-                label: '종목',
-                value: '${widget.instrument.name} ${widget.instrument.symbol}',
-              ),
-              _ReviewRow(label: '구분', value: sideText),
-              _ReviewRow(
-                label: '주문금액',
-                value: _assetMoney(widget.instrument, estimated),
-              ),
-              const SizedBox(height: 14),
-              FilledButton.icon(
-                onPressed: () {
-                  Navigator.of(context).pop();
-                  _submitOrder();
-                },
-                icon: const Icon(Icons.lock_outline_rounded),
-                label: const Text('KIS로 주문 전송'),
-              ),
-            ],
-          ),
+            );
+          },
         );
       },
     );
   }
 
   Future<void> _submitOrder() async {
+    if (!_riskNoticeAgreed) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('실거래 전 투자위험 고지 동의가 필요합니다.')),
+      );
+      return;
+    }
     final quantity =
         int.tryParse(removeNumberGrouping(_quantityController.text)) ?? 0;
     final limitPrice =
@@ -2188,6 +2302,47 @@ class _OrderValidationNotice extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _RiskNoticeConsentBox extends StatelessWidget {
+  const _RiskNoticeConsentBox({
+    required this.checked,
+    required this.onChanged,
+  });
+
+  final bool checked;
+  final ValueChanged<bool?>? onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: MetaServerColors.amber.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(
+          color: MetaServerColors.amber.withValues(alpha: 0.36),
+        ),
+      ),
+      child: CheckboxListTile(
+        value: checked,
+        onChanged: onChanged,
+        controlAffinity: ListTileControlAffinity.leading,
+        activeColor: MetaServerColors.green,
+        contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        title: const Text(
+          '실거래 전 투자위험 고지를 확인하고 동의합니다.',
+          style: TextStyle(fontWeight: FontWeight.w900),
+        ),
+        subtitle: Text(
+          '시장가격 변동, 주문 거부, 체결 지연, 원금 손실 가능성을 이해했으며 본인 책임으로 주문을 전송합니다.',
+          style: TextStyle(
+            color: MetaServerColors.ink.withValues(alpha: 0.68),
+            height: 1.35,
+          ),
+        ),
       ),
     );
   }

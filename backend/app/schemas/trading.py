@@ -297,6 +297,17 @@ class TradingConsentCreate(BaseModel):
     raw_payload: dict[str, Any] = Field(default_factory=dict)
 
 
+class TradingConsentAgreementRequest(BaseModel):
+    agreed: bool = True
+
+
+class TradingConsentStatusResponse(BaseModel):
+    consent_type: TradingConsentType
+    version: str
+    agreed: bool
+    agreed_at: datetime | None = None
+
+
 class KisConnectionStatusResponse(BaseModel):
     configured: bool
     default_environment: BrokerEnvironment

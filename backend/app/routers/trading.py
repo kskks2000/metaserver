@@ -4,9 +4,15 @@ import logging
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from psycopg import Connection
 
+from app.core.config import get_settings
+from app.core.database import db_connection
 from app.core.security import get_current_principal
+from app.repositories import trading as trading_repository
+from app.repositories.users import get_user_by_firebase_uid, sync_user_from_firebase
+from app.schemas.auth import AuthSessionRequest
 from app.schemas.auth import FirebasePrincipal
 from app.schemas.trading import (
     BrokerEnvironment,
@@ -21,6 +27,10 @@ from app.schemas.trading import (
     OverseasStockOrderRequest,
     OverseasStockOrderResponse,
     OverseasStockQuoteResponse,
+    TradingConsentAgreementRequest,
+    TradingConsentCreate,
+    TradingConsentStatusResponse,
+    TradingConsentType,
 )
 from app.services.krx_directory import krx_stock_directory
 from app.services.kis import (
@@ -33,6 +43,65 @@ from app.services.kis import (
 
 router = APIRouter(prefix="/trading", tags=["trading"])
 logger = logging.getLogger(__name__)
+TRADING_RISK_NOTICE_VERSION = "2026-05-10"
+
+
+def _require_database() -> None:
+    if get_settings().use_local_user_store:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Trading consent requires the MetaServer database connection.",
+        )
+
+
+def _current_user_id(conn: Connection, principal: FirebasePrincipal) -> str:
+    user = get_user_by_firebase_uid(conn, principal.uid)
+    if user is None:
+        user = sync_user_from_firebase(conn, principal, AuthSessionRequest())
+    return user["id"]
+
+
+def _risk_notice_status(
+    conn: Connection,
+    user_id: str,
+) -> TradingConsentStatusResponse:
+    row = trading_repository.get_trading_consent(
+        conn,
+        user_id,
+        TradingConsentType.trading_risk_notice,
+        TRADING_RISK_NOTICE_VERSION,
+    )
+    agreed = bool(row and row.get("agreed"))
+    return TradingConsentStatusResponse(
+        consent_type=TradingConsentType.trading_risk_notice,
+        version=TRADING_RISK_NOTICE_VERSION,
+        agreed=agreed,
+        agreed_at=row.get("agreed_at") if agreed and row else None,
+    )
+
+
+def _ensure_risk_notice_agreed(conn: Connection, user_id: str) -> None:
+    if trading_repository.has_trading_consent(
+        conn,
+        user_id,
+        TradingConsentType.trading_risk_notice,
+        TRADING_RISK_NOTICE_VERSION,
+    ):
+        return
+    raise HTTPException(
+        status_code=status.HTTP_428_PRECONDITION_REQUIRED,
+        detail="실거래 전 투자위험 고지 동의가 필요합니다.",
+    )
+
+
+def _client_ip(request: Request) -> str | None:
+    forwarded_for = request.headers.get("x-forwarded-for", "")
+    forwarded_ip = forwarded_for.split(",", maxsplit=1)[0].strip()
+    return (
+        request.headers.get("cf-connecting-ip")
+        or forwarded_ip
+        or (request.client.host if request.client else None)
+    )
 
 
 def _raise_kis_error(exc: Exception) -> None:
@@ -70,6 +139,54 @@ def _raise_kis_error(exc: Exception) -> None:
 @router.get("/kis/status", response_model=KisConnectionStatusResponse)
 def kis_status() -> KisConnectionStatusResponse:
     return get_kis_client().status()
+
+
+@router.get(
+    "/consents/trading-risk-notice",
+    response_model=TradingConsentStatusResponse,
+)
+def get_trading_risk_notice_consent(
+    principal: FirebasePrincipal = Depends(get_current_principal),
+) -> TradingConsentStatusResponse:
+    _require_database()
+    with db_connection() as conn:
+        user_id = _current_user_id(conn, principal)
+        return _risk_notice_status(conn, user_id)
+
+
+@router.post(
+    "/consents/trading-risk-notice",
+    response_model=TradingConsentStatusResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def agree_trading_risk_notice(
+    payload: TradingConsentAgreementRequest,
+    request: Request,
+    principal: FirebasePrincipal = Depends(get_current_principal),
+) -> TradingConsentStatusResponse:
+    if not payload.agreed:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="투자위험 고지는 동의 상태로만 저장할 수 있습니다.",
+        )
+    _require_database()
+    user_agent = request.headers.get("user-agent")
+    with db_connection() as conn:
+        user_id = _current_user_id(conn, principal)
+        trading_repository.record_trading_consent(
+            conn,
+            TradingConsentCreate(
+                user_id=user_id,
+                consent_type=TradingConsentType.trading_risk_notice,
+                version=TRADING_RISK_NOTICE_VERSION,
+                agreed=True,
+                ip_address=_client_ip(request),
+                user_agent=user_agent,
+                raw_payload={"source": "order_ticket"},
+            ),
+        )
+        conn.commit()
+        return _risk_notice_status(conn, user_id)
 
 
 @router.get(
@@ -180,7 +297,10 @@ def place_domestic_stock_order(
     payload: DomesticStockOrderRequest,
     principal: FirebasePrincipal = Depends(get_current_principal),
 ) -> DomesticStockOrderResponse:
-    del principal
+    _require_database()
+    with db_connection() as conn:
+        user_id = _current_user_id(conn, principal)
+        _ensure_risk_notice_agreed(conn, user_id)
     payload.symbol = payload.symbol.upper()
     payload.exchange_code = payload.exchange_code.upper()
     try:
@@ -199,7 +319,10 @@ def place_overseas_stock_order(
     payload: OverseasStockOrderRequest,
     principal: FirebasePrincipal = Depends(get_current_principal),
 ) -> OverseasStockOrderResponse:
-    del principal
+    _require_database()
+    with db_connection() as conn:
+        user_id = _current_user_id(conn, principal)
+        _ensure_risk_notice_agreed(conn, user_id)
     payload.symbol = payload.symbol.upper()
     payload.market_code = payload.market_code.upper()
     try:
