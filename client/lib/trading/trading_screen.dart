@@ -30,12 +30,6 @@ extension _AssetClassMeta on _AssetClass {
         _AssetClass.crypto => '코인',
       };
 
-  IconData get icon => switch (this) {
-        _AssetClass.domesticStock => Icons.flag_circle_outlined,
-        _AssetClass.overseasStock => Icons.public_rounded,
-        _AssetClass.crypto => Icons.currency_bitcoin_rounded,
-      };
-
   Color get accent => switch (this) {
         _AssetClass.domesticStock => MetaServerColors.green,
         _AssetClass.overseasStock => MetaServerColors.cyan,
@@ -2666,7 +2660,7 @@ class _AssetClassTab extends StatelessWidget {
         ? accent.withValues(alpha: 0.16)
         : Colors.white.withValues(alpha: 0.64);
     final iconColor =
-        selected ? accent : MetaServerColors.ink.withValues(alpha: 0.5);
+        selected ? accent : MetaServerColors.ink.withValues(alpha: 0.68);
 
     return Tooltip(
       message: assetClass.label,
@@ -2762,7 +2756,10 @@ class _AssetClassTab extends StatelessWidget {
                           ),
                         ],
                       ),
-                      child: Icon(assetClass.icon, size: 16, color: iconColor),
+                      child: _AssetClassGlyph(
+                        assetClass: assetClass,
+                        color: iconColor,
+                      ),
                     ),
                     const SizedBox(width: 7),
                     Flexible(
@@ -2786,6 +2783,126 @@ class _AssetClassTab extends StatelessWidget {
         ),
       ),
     );
+  }
+}
+
+class _AssetClassGlyph extends StatelessWidget {
+  const _AssetClassGlyph({
+    required this.assetClass,
+    required this.color,
+  });
+
+  final _AssetClass assetClass;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return CustomPaint(
+      painter: _AssetClassGlyphPainter(assetClass: assetClass, color: color),
+      size: const Size(18, 18),
+    );
+  }
+}
+
+class _AssetClassGlyphPainter extends CustomPainter {
+  const _AssetClassGlyphPainter({
+    required this.assetClass,
+    required this.color,
+  });
+
+  final _AssetClass assetClass;
+  final Color color;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final stroke = Paint()
+      ..color = color
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.8
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round;
+    final fill = Paint()
+      ..color = color.withValues(alpha: 0.12)
+      ..style = PaintingStyle.fill;
+
+    switch (assetClass) {
+      case _AssetClass.domesticStock:
+        final area = Rect.fromLTWH(
+          size.width * 0.12,
+          size.height * 0.18,
+          size.width * 0.76,
+          size.height * 0.64,
+        );
+        canvas.drawRRect(
+          RRect.fromRectAndRadius(area, const Radius.circular(3)),
+          fill,
+        );
+        final path = Path()
+          ..moveTo(size.width * 0.22, size.height * 0.68)
+          ..lineTo(size.width * 0.42, size.height * 0.50)
+          ..lineTo(size.width * 0.55, size.height * 0.58)
+          ..lineTo(size.width * 0.78, size.height * 0.34);
+        canvas.drawPath(path, stroke);
+        canvas.drawLine(
+          Offset(size.width * 0.22, size.height * 0.76),
+          Offset(size.width * 0.82, size.height * 0.76),
+          stroke..strokeWidth = 1.2,
+        );
+      case _AssetClass.overseasStock:
+        final center = Offset(size.width / 2, size.height / 2);
+        final radius = size.shortestSide * 0.37;
+        canvas.drawCircle(center, radius, fill);
+        canvas.drawCircle(center, radius, stroke);
+        canvas.drawOval(
+          Rect.fromCenter(
+            center: center,
+            width: radius * 0.88,
+            height: radius * 2,
+          ),
+          stroke,
+        );
+        canvas.drawLine(
+          Offset(center.dx - radius, center.dy),
+          Offset(center.dx + radius, center.dy),
+          stroke,
+        );
+      case _AssetClass.crypto:
+        final center = Offset(size.width / 2, size.height / 2);
+        final radius = size.shortestSide * 0.36;
+        canvas.drawCircle(center, radius, fill);
+        canvas.drawCircle(center, radius, stroke);
+        final coin = Path()
+          ..moveTo(size.width * 0.43, size.height * 0.30)
+          ..lineTo(size.width * 0.43, size.height * 0.70)
+          ..moveTo(size.width * 0.39, size.height * 0.36)
+          ..lineTo(size.width * 0.58, size.height * 0.36)
+          ..quadraticBezierTo(
+            size.width * 0.70,
+            size.height * 0.36,
+            size.width * 0.70,
+            size.height * 0.47,
+          )
+          ..quadraticBezierTo(
+            size.width * 0.70,
+            size.height * 0.57,
+            size.width * 0.58,
+            size.height * 0.57,
+          )
+          ..lineTo(size.width * 0.40, size.height * 0.57)
+          ..moveTo(size.width * 0.60, size.height * 0.57)
+          ..quadraticBezierTo(
+            size.width * 0.73,
+            size.height * 0.57,
+            size.width * 0.73,
+            size.height * 0.67,
+          );
+        canvas.drawPath(coin, stroke..strokeWidth = 1.6);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _AssetClassGlyphPainter oldDelegate) {
+    return oldDelegate.assetClass != assetClass || oldDelegate.color != color;
   }
 }
 
