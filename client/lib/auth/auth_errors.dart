@@ -1,5 +1,6 @@
 import 'package:dio/dio.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/services.dart';
 
 String authErrorMessage(Object error) {
   if (error is DioException) {
@@ -34,6 +35,16 @@ String authErrorMessage(Object error) {
       default:
         return error.message ?? '인증 처리 중 문제가 발생했습니다.';
     }
+  }
+  if (error is PlatformException) {
+    final message = error.message ?? '';
+    if (error.code == 'sign_in_failed' && message.contains('api: 10')) {
+      return 'Google 로그인 설정을 확인할 수 없습니다. 앱을 최신 버전으로 업데이트한 뒤 다시 시도해 주세요.';
+    }
+    if (error.code == 'sign_in_canceled') {
+      return '로그인이 취소되었습니다.';
+    }
+    return message.isNotEmpty ? message : '로그인 처리 중 문제가 발생했습니다.';
   }
   return error.toString().replaceFirst('Exception: ', '');
 }
