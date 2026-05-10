@@ -3,6 +3,8 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+const productionApiBaseUrl = 'https://metaserver.co.kr/bridge/v1';
+
 final apiClientProvider = Provider<ApiClient>((ref) {
   const configuredBaseUrl = String.fromEnvironment('API_BASE_URL');
   final baseUrl =
@@ -14,16 +16,34 @@ final apiClientProvider = Provider<ApiClient>((ref) {
 });
 
 String get defaultApiBaseUrl {
-  if (kIsWeb) {
-    final host = Uri.base.host;
-    if (host == 'localhost' || host == '127.0.0.1') {
+  return platformDefaultApiBaseUrl(
+    isWeb: kIsWeb,
+    targetPlatform: defaultTargetPlatform,
+    debugMode: kDebugMode,
+    webHost: Uri.base.host,
+  );
+}
+
+@visibleForTesting
+String platformDefaultApiBaseUrl({
+  required bool isWeb,
+  required TargetPlatform targetPlatform,
+  required bool debugMode,
+  required String webHost,
+}) {
+  if (isWeb) {
+    if (webHost == 'localhost' || webHost == '127.0.0.1') {
       return 'http://localhost:8000/api/v1';
     }
     // Use the current host's proxy path so apex/www deployments never cross CORS.
     return '/bridge/v1';
   }
 
-  return switch (defaultTargetPlatform) {
+  if (!debugMode) {
+    return productionApiBaseUrl;
+  }
+
+  return switch (targetPlatform) {
     TargetPlatform.android => 'http://10.0.2.2:8000/api/v1',
     _ => 'http://localhost:8000/api/v1',
   };
