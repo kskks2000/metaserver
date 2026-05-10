@@ -26,3 +26,4 @@ flutter:
   uses-material-design: true
   assets:
     - assets/brand/metaserver-icon.png
+    - assets/ui/asset-selector-texture.jpg

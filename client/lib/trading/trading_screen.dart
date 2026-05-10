@@ -2602,17 +2602,28 @@ class _AssetClassSelector extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      height: 54,
-      padding: const EdgeInsets.all(4),
+      height: 58,
+      padding: const EdgeInsets.all(5),
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: MetaServerColors.line),
+        border:
+            Border.all(color: MetaServerColors.line.withValues(alpha: 0.86)),
+        image: const DecorationImage(
+          image: AssetImage('assets/ui/asset-selector-texture.jpg'),
+          fit: BoxFit.cover,
+          opacity: 0.13,
+        ),
         boxShadow: [
           BoxShadow(
-            color: MetaServerColors.ink.withValues(alpha: 0.07),
-            blurRadius: 18,
-            offset: const Offset(0, 8),
+            color: MetaServerColors.ink.withValues(alpha: 0.06),
+            blurRadius: 22,
+            offset: const Offset(0, 10),
+          ),
+          BoxShadow(
+            color: Colors.white.withValues(alpha: 0.75),
+            blurRadius: 3,
+            offset: const Offset(0, -1),
           ),
         ],
       ),
@@ -2648,11 +2659,14 @@ class _AssetClassTab extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final accent = assetClass.accent;
-    final foreground = selected ? Colors.white : MetaServerColors.ink;
+    final foreground = selected
+        ? MetaServerColors.ink
+        : MetaServerColors.ink.withValues(alpha: 0.72);
     final iconBackground = selected
-        ? Colors.white.withValues(alpha: 0.18)
-        : accent.withValues(alpha: 0.1);
-    final iconColor = selected ? Colors.white : accent;
+        ? accent.withValues(alpha: 0.16)
+        : Colors.white.withValues(alpha: 0.64);
+    final iconColor =
+        selected ? accent : MetaServerColors.ink.withValues(alpha: 0.5);
 
     return Tooltip(
       message: assetClass.label,
@@ -2663,24 +2677,39 @@ class _AssetClassTab extends StatelessWidget {
           onTap: selected ? null : onTap,
           borderRadius: BorderRadius.circular(6),
           child: AnimatedContainer(
-            duration: const Duration(milliseconds: 180),
-            curve: Curves.easeOutCubic,
+            duration: const Duration(milliseconds: 220),
+            curve: Curves.easeOutQuart,
             height: double.infinity,
-            padding: const EdgeInsets.symmetric(horizontal: 8),
+            padding: const EdgeInsets.symmetric(horizontal: 9),
             decoration: BoxDecoration(
-              color: selected ? MetaServerColors.ink : Colors.transparent,
+              gradient: selected
+                  ? LinearGradient(
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                      colors: [
+                        Colors.white,
+                        accent.withValues(alpha: 0.11),
+                      ],
+                    )
+                  : null,
+              color: selected ? null : Colors.white.withValues(alpha: 0.28),
               borderRadius: BorderRadius.circular(6),
               border: Border.all(
                 color: selected
-                    ? Colors.white.withValues(alpha: 0.10)
-                    : Colors.transparent,
+                    ? accent.withValues(alpha: 0.28)
+                    : Colors.white.withValues(alpha: 0.18),
               ),
               boxShadow: selected
                   ? [
                       BoxShadow(
-                        color: MetaServerColors.ink.withValues(alpha: 0.18),
-                        blurRadius: 14,
-                        offset: const Offset(0, 7),
+                        color: accent.withValues(alpha: 0.14),
+                        blurRadius: 16,
+                        offset: const Offset(0, 8),
+                      ),
+                      BoxShadow(
+                        color: Colors.white.withValues(alpha: 0.9),
+                        blurRadius: 2,
+                        offset: const Offset(0, -1),
                       ),
                     ]
                   : null,
@@ -2696,7 +2725,13 @@ class _AssetClassTab extends StatelessWidget {
                     child: Container(
                       height: 2,
                       decoration: BoxDecoration(
-                        color: accent,
+                        gradient: LinearGradient(
+                          colors: [
+                            accent.withValues(alpha: 0),
+                            accent,
+                            accent.withValues(alpha: 0),
+                          ],
+                        ),
                         borderRadius: BorderRadius.circular(99),
                       ),
                     ),
@@ -2706,17 +2741,26 @@ class _AssetClassTab extends StatelessWidget {
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     AnimatedContainer(
-                      duration: const Duration(milliseconds: 180),
-                      width: 26,
-                      height: 26,
+                      duration: const Duration(milliseconds: 220),
+                      width: 28,
+                      height: 28,
                       decoration: BoxDecoration(
                         color: iconBackground,
                         borderRadius: BorderRadius.circular(6),
                         border: Border.all(
                           color: selected
-                              ? Colors.white.withValues(alpha: 0.20)
-                              : accent.withValues(alpha: 0.18),
+                              ? accent.withValues(alpha: 0.22)
+                              : Colors.white.withValues(alpha: 0.42),
                         ),
+                        boxShadow: [
+                          BoxShadow(
+                            color: selected
+                                ? accent.withValues(alpha: 0.12)
+                                : MetaServerColors.ink.withValues(alpha: 0.04),
+                            blurRadius: 8,
+                            offset: const Offset(0, 3),
+                          ),
+                        ],
                       ),
                       child: Icon(assetClass.icon, size: 16, color: iconColor),
                     ),
@@ -2730,6 +2774,7 @@ class _AssetClassTab extends StatelessWidget {
                           color: foreground,
                           fontSize: 13,
                           fontWeight: FontWeight.w900,
+                          height: 1,
                         ),
                       ),
                     ),
