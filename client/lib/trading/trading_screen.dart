@@ -200,16 +200,41 @@ class _TradingScreenState extends ConsumerState<TradingScreen> {
       (item) => item.id == groupId,
       orElse: () => _selectedGroup,
     );
+    final groupInstruments = List<_Instrument>.of(group.instruments);
+    final nextAssetClass = _preferredAssetClassForGroup(
+      group,
+      _selectedAssetClass,
+    );
+    final visibleInstruments = [
+      for (final instrument in groupInstruments)
+        if (instrument.assetClass == nextAssetClass) instrument,
+    ];
+    final nextSelectedInstrument = visibleInstruments.firstWhere(
+      (instrument) => instrument.assetKey == _selectedInstrument.assetKey,
+      orElse: () => visibleInstruments.isNotEmpty
+          ? visibleInstruments.first
+          : _defaultInstrumentForAssetClass(nextAssetClass),
+    );
     setState(() {
       _selectedGroupId = group.id;
-      _instruments = List<_Instrument>.of(group.instruments);
-      if (!_instruments.any(
-        (instrument) => instrument.assetKey == _selectedInstrument.assetKey,
-      )) {
-        _selectedInstrument = _visibleInstruments.first;
-      }
+      _selectedAssetClass = nextAssetClass;
+      _instruments = groupInstruments;
+      _selectedInstrument = nextSelectedInstrument;
     });
     Future.microtask(() => _refreshWatchlistQuotes(showMessage: false));
+  }
+
+  _AssetClass _preferredAssetClassForGroup(
+    _WatchlistGroup group,
+    _AssetClass preferred,
+  ) {
+    if (group.instruments.any(
+      (instrument) => instrument.assetClass == preferred,
+    )) {
+      return preferred;
+    }
+    if (group.instruments.isEmpty) return preferred;
+    return group.instruments.first.assetClass;
   }
 
   void _openOrder(_Instrument instrument, _TradeSide side) {
@@ -3025,25 +3050,82 @@ class _WatchlistGroupBar extends StatelessWidget {
         itemBuilder: (context, index) {
           final group = groups[index];
           final selected = group.id == selectedGroupId;
-          return ChoiceChip(
+          return _WatchlistGroupChip(
+            group: group,
             selected: selected,
-            onSelected: (_) => onSelected(group.id),
-            avatar: Icon(
-              selected ? Icons.folder_rounded : Icons.folder_outlined,
-              size: 18,
-            ),
-            label: Text('${group.name} ${group.instruments.length}'),
-            labelStyle: TextStyle(
-              color: selected ? Colors.white : MetaServerColors.ink,
-              fontWeight: FontWeight.w900,
-            ),
-            selectedColor: MetaServerColors.green,
-            backgroundColor: MetaServerColors.canvas,
-            side: BorderSide(
-              color: selected ? MetaServerColors.green : MetaServerColors.line,
-            ),
+            onTap: () => onSelected(group.id),
           );
         },
+      ),
+    );
+  }
+}
+
+class _WatchlistGroupChip extends StatelessWidget {
+  const _WatchlistGroupChip({
+    required this.group,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final _WatchlistGroup group;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final accent = selected ? MetaServerColors.green : MetaServerColors.ink;
+    return Tooltip(
+      message: '${group.name} 그룹 선택',
+      child: Material(
+        color: Colors.transparent,
+        borderRadius: BorderRadius.circular(8),
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(8),
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 160),
+            curve: Curves.easeOutCubic,
+            height: 38,
+            padding: const EdgeInsets.symmetric(horizontal: 12),
+            decoration: BoxDecoration(
+              color: selected ? MetaServerColors.green : Colors.white,
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(
+                color:
+                    selected ? MetaServerColors.green : MetaServerColors.line,
+              ),
+              boxShadow: selected
+                  ? [
+                      BoxShadow(
+                        color: MetaServerColors.green.withValues(alpha: 0.16),
+                        blurRadius: 12,
+                        offset: const Offset(0, 6),
+                      ),
+                    ]
+                  : null,
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  selected ? Icons.folder_rounded : Icons.folder_outlined,
+                  size: 18,
+                  color:
+                      selected ? Colors.white : accent.withValues(alpha: 0.8),
+                ),
+                const SizedBox(width: 7),
+                Text(
+                  '${group.name} ${group.instruments.length}',
+                  style: TextStyle(
+                    color: selected ? Colors.white : MetaServerColors.ink,
+                    fontWeight: FontWeight.w900,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
       ),
     );
   }
