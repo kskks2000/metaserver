@@ -156,12 +156,10 @@ class _TradingScreenState extends ConsumerState<TradingScreen> {
   }
 
   List<_Instrument> get _visibleInstruments {
-    final filtered = [
+    return [
       for (final instrument in _instruments)
         if (instrument.assetClass == _selectedAssetClass) instrument,
     ];
-    if (filtered.isNotEmpty) return filtered;
-    return [_defaultInstrumentForAssetClass(_selectedAssetClass)];
   }
 
   void _selectAssetClass(_AssetClass assetClass) {
@@ -228,13 +226,18 @@ class _TradingScreenState extends ConsumerState<TradingScreen> {
     _WatchlistGroup group,
     _AssetClass preferred,
   ) {
-    if (group.instruments.any(
-      (instrument) => instrument.assetClass == preferred,
-    )) {
+    return _preferredAssetClassForInstruments(group.instruments, preferred);
+  }
+
+  _AssetClass _preferredAssetClassForInstruments(
+    List<_Instrument> instruments,
+    _AssetClass preferred,
+  ) {
+    if (instruments.any((instrument) => instrument.assetClass == preferred)) {
       return preferred;
     }
-    if (group.instruments.isEmpty) return preferred;
-    return group.instruments.first.assetClass;
+    if (instruments.isEmpty) return preferred;
+    return instruments.first.assetClass;
   }
 
   void _openOrder(_Instrument instrument, _TradeSide side) {
@@ -341,6 +344,18 @@ class _TradingScreenState extends ConsumerState<TradingScreen> {
     final refreshedInstruments = List<_Instrument>.of(_instruments);
     var refreshedSelectedInstrument = _selectedInstrument;
     try {
+      if (_visibleInstruments.isEmpty) {
+        if (showMessage) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                '현재 그룹에 ${_selectedAssetClass.label} 종목이 없습니다.',
+              ),
+            ),
+          );
+        }
+        return;
+      }
       if (instrumentsSnapshot.isEmpty) {
         throw StateError(
           'No live quote adapter is available for this asset class.',
@@ -576,11 +591,22 @@ class _TradingScreenState extends ConsumerState<TradingScreen> {
     final remaining =
         _watchlistGroups.where((item) => item.id != group.id).toList();
     final nextGroup = remaining.first;
+    final nextAssetClass = _preferredAssetClassForGroup(
+      nextGroup,
+      _selectedAssetClass,
+    );
+    final nextVisibleInstruments = [
+      for (final instrument in nextGroup.instruments)
+        if (instrument.assetClass == nextAssetClass) instrument,
+    ];
     setState(() {
       _watchlistGroups = remaining;
       _selectedGroupId = nextGroup.id;
+      _selectedAssetClass = nextAssetClass;
       _instruments = List<_Instrument>.of(nextGroup.instruments);
-      _selectedInstrument = _instruments.first;
+      _selectedInstrument = nextVisibleInstruments.isNotEmpty
+          ? nextVisibleInstruments.first
+          : _defaultInstrumentForAssetClass(nextAssetClass);
     });
     _saveWatchlistGroups();
   }
@@ -599,7 +625,18 @@ class _TradingScreenState extends ConsumerState<TradingScreen> {
     setState(() {
       _replaceSelectedGroupInstruments(nextInstruments);
       if (_selectedInstrument.assetKey == instrument.assetKey) {
-        _selectedInstrument = _visibleInstruments.first;
+        final nextAssetClass = _preferredAssetClassForInstruments(
+          nextInstruments,
+          _selectedAssetClass,
+        );
+        final visible = [
+          for (final item in nextInstruments)
+            if (item.assetClass == nextAssetClass) item,
+        ];
+        _selectedAssetClass = nextAssetClass;
+        _selectedInstrument = visible.isNotEmpty
+            ? visible.first
+            : _defaultInstrumentForAssetClass(nextAssetClass);
       }
     });
     _saveWatchlistGroups();
@@ -2668,19 +2705,27 @@ class _WatchlistPanel extends StatelessWidget {
           ),
           const SizedBox(height: 12),
           _WatchlistGroupBar(
+            selectedAssetClass: selectedAssetClass,
             groups: groups,
             selectedGroupId: selectedGroupId,
             onSelected: onGroupSelected,
           ),
           const SizedBox(height: 14),
-          for (final instrument in instruments)
-            _InstrumentTile(
-              instrument: instrument,
-              selected: instrument.assetKey == selectedInstrument.assetKey,
-              onTap: () => onSelected(instrument),
-              onOrder: onOrder,
-              onRemove: () => onRemoveInstrument(instrument),
-            ),
+          if (instruments.isEmpty)
+            _PanelStateMessage(
+              icon: Icons.folder_open_rounded,
+              message:
+                  '이 그룹에는 ${selectedAssetClass.label} 종목이 없습니다. 오른쪽 위 + 버튼으로 추가해 주세요.',
+            )
+          else
+            for (final instrument in instruments)
+              _InstrumentTile(
+                instrument: instrument,
+                selected: instrument.assetKey == selectedInstrument.assetKey,
+                onTap: () => onSelected(instrument),
+                onOrder: onOrder,
+                onRemove: () => onRemoveInstrument(instrument),
+              ),
         ],
       ),
     );
@@ -3030,11 +3075,13 @@ class _AssetClassGlyphPainter extends CustomPainter {
 
 class _WatchlistGroupBar extends StatelessWidget {
   const _WatchlistGroupBar({
+    required this.selectedAssetClass,
     required this.groups,
     required this.selectedGroupId,
     required this.onSelected,
   });
 
+  final _AssetClass selectedAssetClass;
   final List<_WatchlistGroup> groups;
   final String selectedGroupId;
   final ValueChanged<String> onSelected;
@@ -3052,6 +3099,7 @@ class _WatchlistGroupBar extends StatelessWidget {
           final selected = group.id == selectedGroupId;
           return _WatchlistGroupChip(
             group: group,
+            selectedAssetClass: selectedAssetClass,
             selected: selected,
             onTap: () => onSelected(group.id),
           );
@@ -3064,19 +3112,24 @@ class _WatchlistGroupBar extends StatelessWidget {
 class _WatchlistGroupChip extends StatelessWidget {
   const _WatchlistGroupChip({
     required this.group,
+    required this.selectedAssetClass,
     required this.selected,
     required this.onTap,
   });
 
   final _WatchlistGroup group;
+  final _AssetClass selectedAssetClass;
   final bool selected;
   final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
     final accent = selected ? MetaServerColors.green : MetaServerColors.ink;
+    final visibleCount = group.assetCount(selectedAssetClass);
+    final totalCount = group.instruments.length;
     return Tooltip(
-      message: '${group.name} 그룹 선택',
+      message:
+          '${group.name} ${selectedAssetClass.label} $visibleCount개 · 전체 $totalCount개',
       child: Material(
         color: Colors.transparent,
         borderRadius: BorderRadius.circular(8),
@@ -3116,7 +3169,7 @@ class _WatchlistGroupChip extends StatelessWidget {
                 ),
                 const SizedBox(width: 7),
                 Text(
-                  '${group.name} ${group.instruments.length}',
+                  '${group.name} $visibleCount',
                   style: TextStyle(
                     color: selected ? Colors.white : MetaServerColors.ink,
                     fontWeight: FontWeight.w900,
@@ -4294,6 +4347,12 @@ class _WatchlistGroup {
       'instruments':
           instruments.map((instrument) => instrument.toJson()).toList(),
     };
+  }
+
+  int assetCount(_AssetClass assetClass) {
+    return instruments
+        .where((instrument) => instrument.assetClass == assetClass)
+        .length;
   }
 
   _WatchlistGroup copyWith({String? name, List<_Instrument>? instruments}) {
