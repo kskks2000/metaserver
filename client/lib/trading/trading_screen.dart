@@ -59,6 +59,69 @@ const _watchlistStorageKey = 'metaserver.trading.watchlist.custom.v1';
 const _watchlistGroupsStorageKey = 'metaserver.trading.watchlist.groups.v1';
 const _defaultWatchlistGroupId = 'default';
 
+String _defaultWatchlistGroupIdForAssetClass(_AssetClass assetClass) {
+  return '${_defaultWatchlistGroupId}_${assetClass.storageValue}';
+}
+
+String _assetScopedWatchlistGroupId(String groupId, _AssetClass assetClass) {
+  return '${groupId}_${assetClass.storageValue}';
+}
+
+List<_WatchlistGroup> _normalizeWatchlistGroups(
+  List<_WatchlistGroup> groups,
+) {
+  final normalized = <_WatchlistGroup>[];
+  final usedIds = <String>{};
+
+  for (final group in groups) {
+    final instruments = <_Instrument>[];
+    final usedAssetKeys = <String>{};
+    for (final instrument in group.instruments) {
+      if (instrument.assetClass != group.assetClass) continue;
+      if (!usedAssetKeys.add(instrument.assetKey)) continue;
+      instruments.add(instrument);
+    }
+    if (instruments.isEmpty) continue;
+
+    var id = group.id;
+    if (!usedIds.add(id)) {
+      id = _assetScopedWatchlistGroupId(group.id, group.assetClass);
+      var suffix = 2;
+      while (!usedIds.add(id)) {
+        id =
+            '${_assetScopedWatchlistGroupId(group.id, group.assetClass)}_$suffix';
+        suffix += 1;
+      }
+    }
+
+    normalized.add(
+      _WatchlistGroup(
+        id: id,
+        assetClass: group.assetClass,
+        name: group.name,
+        instruments: instruments,
+      ),
+    );
+  }
+
+  for (final assetClass in _AssetClass.values) {
+    final hasAssetGroup =
+        normalized.any((group) => group.assetClass == assetClass);
+    if (!hasAssetGroup) {
+      normalized.add(
+        _WatchlistGroup(
+          id: _defaultWatchlistGroupIdForAssetClass(assetClass),
+          assetClass: assetClass,
+          name: '기본',
+          instruments: [_defaultInstrumentForAssetClass(assetClass)],
+        ),
+      );
+    }
+  }
+
+  return normalized;
+}
+
 class TradingScreen extends ConsumerStatefulWidget {
   const TradingScreen({super.key});
 
@@ -74,6 +137,7 @@ class _TradingScreenState extends ConsumerState<TradingScreen> {
   late String _selectedGroupId;
   late List<_Instrument> _instruments;
   late _Instrument _selectedInstrument;
+  final Map<_AssetClass, String> _selectedGroupIdsByAssetClass = {};
   late Future<KisPortfolio> _portfolioFuture;
   KisPortfolio? _cachedPortfolio;
   late Future<KisConnectionStatus> _kisStatusFuture;
@@ -84,9 +148,12 @@ class _TradingScreenState extends ConsumerState<TradingScreen> {
   void initState() {
     super.initState();
     _watchlistGroups = _restoreWatchlistGroups();
-    _selectedGroupId = _watchlistGroups.first.id;
-    _instruments = List<_Instrument>.of(_watchlistGroups.first.instruments);
-    _selectedInstrument = _visibleInstruments.first;
+    _selectedAssetClass = _AssetClass.domesticStock;
+    final initialGroup = _groupsForAssetClass(_selectedAssetClass).first;
+    _selectedGroupId = initialGroup.id;
+    _selectedGroupIdsByAssetClass[_selectedAssetClass] = initialGroup.id;
+    _instruments = List<_Instrument>.of(initialGroup.instruments);
+    _selectedInstrument = _instruments.first;
     _portfolioFuture = _loadPortfolio();
     _kisStatusFuture = _loadKisStatus();
     Future.microtask(() => _refreshWatchlistQuotes(showMessage: false));
@@ -101,22 +168,29 @@ class _TradingScreenState extends ConsumerState<TradingScreen> {
           final groups = [
             for (final item in decoded)
               if (item is Map)
-                _WatchlistGroup.fromJson(Map<String, Object?>.from(item)),
-          ].whereType<_WatchlistGroup>().toList();
-          if (groups.isNotEmpty) return groups;
+                ..._WatchlistGroup.fromJson(
+                  Map<String, Object?>.from(item),
+                ),
+          ];
+          if (groups.isNotEmpty) return _normalizeWatchlistGroups(groups);
         }
       } catch (_) {
         // Fall through to the legacy watchlist migration path.
       }
     }
 
-    return [
-      _WatchlistGroup(
-        id: _defaultWatchlistGroupId,
-        name: '기본',
-        instruments: _restoreLegacyWatchlistInstruments(),
-      ),
-    ];
+    return _normalizeWatchlistGroups([
+      for (final assetClass in _AssetClass.values)
+        _WatchlistGroup(
+          id: _defaultWatchlistGroupIdForAssetClass(assetClass),
+          assetClass: assetClass,
+          name: '기본',
+          instruments: [
+            for (final instrument in _restoreLegacyWatchlistInstruments())
+              if (instrument.assetClass == assetClass) instrument,
+          ],
+        ),
+    ]);
   }
 
   List<_Instrument> _restoreLegacyWatchlistInstruments() {
@@ -149,10 +223,18 @@ class _TradingScreenState extends ConsumerState<TradingScreen> {
   }
 
   _WatchlistGroup get _selectedGroup {
-    return _watchlistGroups.firstWhere(
+    final groups = _groupsForAssetClass(_selectedAssetClass);
+    return groups.firstWhere(
       (group) => group.id == _selectedGroupId,
-      orElse: () => _watchlistGroups.first,
+      orElse: () => groups.first,
     );
+  }
+
+  List<_WatchlistGroup> _groupsForAssetClass(_AssetClass assetClass) {
+    return [
+      for (final group in _watchlistGroups)
+        if (group.assetClass == assetClass) group,
+    ];
   }
 
   List<_Instrument> get _visibleInstruments {
@@ -164,13 +246,19 @@ class _TradingScreenState extends ConsumerState<TradingScreen> {
 
   void _selectAssetClass(_AssetClass assetClass) {
     if (_selectedAssetClass == assetClass) return;
-    final nextInstrument = _instruments.firstWhere(
-      (instrument) => instrument.assetClass == assetClass,
-      orElse: () => _defaultInstrumentForAssetClass(assetClass),
+    _selectedGroupIdsByAssetClass[_selectedAssetClass] = _selectedGroupId;
+    final groups = _groupsForAssetClass(assetClass);
+    final rememberedGroupId = _selectedGroupIdsByAssetClass[assetClass];
+    final nextGroup = groups.firstWhere(
+      (group) => group.id == rememberedGroupId,
+      orElse: () => groups.first,
     );
     setState(() {
       _selectedAssetClass = assetClass;
-      _selectedInstrument = nextInstrument;
+      _selectedGroupId = nextGroup.id;
+      _selectedGroupIdsByAssetClass[assetClass] = nextGroup.id;
+      _instruments = List<_Instrument>.of(nextGroup.instruments);
+      _selectedInstrument = _instruments.first;
     });
     Future.microtask(() => _refreshWatchlistQuotes(showMessage: false));
   }
@@ -187,57 +275,34 @@ class _TradingScreenState extends ConsumerState<TradingScreen> {
     _watchlistGroups = [
       for (final group in _watchlistGroups)
         if (group.id == _selectedGroupId)
-          group.copyWith(instruments: List<_Instrument>.of(instruments))
+          group.copyWith(
+            instruments: [
+              for (final instrument in instruments)
+                if (instrument.assetClass == group.assetClass) instrument,
+            ],
+          )
         else
           group,
     ];
   }
 
   void _selectWatchlistGroup(String groupId) {
-    final group = _watchlistGroups.firstWhere(
+    final group = _groupsForAssetClass(_selectedAssetClass).firstWhere(
       (item) => item.id == groupId,
       orElse: () => _selectedGroup,
     );
     final groupInstruments = List<_Instrument>.of(group.instruments);
-    final nextAssetClass = _preferredAssetClassForGroup(
-      group,
-      _selectedAssetClass,
-    );
-    final visibleInstruments = [
-      for (final instrument in groupInstruments)
-        if (instrument.assetClass == nextAssetClass) instrument,
-    ];
-    final nextSelectedInstrument = visibleInstruments.firstWhere(
+    final nextSelectedInstrument = groupInstruments.firstWhere(
       (instrument) => instrument.assetKey == _selectedInstrument.assetKey,
-      orElse: () => visibleInstruments.isNotEmpty
-          ? visibleInstruments.first
-          : _defaultInstrumentForAssetClass(nextAssetClass),
+      orElse: () => groupInstruments.first,
     );
     setState(() {
       _selectedGroupId = group.id;
-      _selectedAssetClass = nextAssetClass;
+      _selectedGroupIdsByAssetClass[_selectedAssetClass] = group.id;
       _instruments = groupInstruments;
       _selectedInstrument = nextSelectedInstrument;
     });
     Future.microtask(() => _refreshWatchlistQuotes(showMessage: false));
-  }
-
-  _AssetClass _preferredAssetClassForGroup(
-    _WatchlistGroup group,
-    _AssetClass preferred,
-  ) {
-    return _preferredAssetClassForInstruments(group.instruments, preferred);
-  }
-
-  _AssetClass _preferredAssetClassForInstruments(
-    List<_Instrument> instruments,
-    _AssetClass preferred,
-  ) {
-    if (instruments.any((instrument) => instrument.assetClass == preferred)) {
-      return preferred;
-    }
-    if (instruments.isEmpty) return preferred;
-    return instruments.first.assetClass;
   }
 
   void _openOrder(_Instrument instrument, _TradeSide side) {
@@ -487,10 +552,15 @@ class _TradingScreenState extends ConsumerState<TradingScreen> {
                   return;
                 }
                 final duplicated = _watchlistGroups.any(
-                  (group) => group.name.toLowerCase() == value.toLowerCase(),
+                  (group) =>
+                      group.assetClass == _selectedAssetClass &&
+                      group.name.toLowerCase() == value.toLowerCase(),
                 );
                 if (duplicated) {
-                  setDialogState(() => validationError = '이미 있는 그룹명입니다.');
+                  setDialogState(
+                    () => validationError =
+                        '${_selectedAssetClass.label} 탭에 이미 있는 그룹명입니다.',
+                  );
                   return;
                 }
                 Navigator.of(context).pop(value);
@@ -543,12 +613,14 @@ class _TradingScreenState extends ConsumerState<TradingScreen> {
 
       final newGroup = _WatchlistGroup(
         id: 'group_${DateTime.now().microsecondsSinceEpoch}',
+        assetClass: _selectedAssetClass,
         name: groupName,
         instruments: [_selectedInstrument],
       );
       setState(() {
         _watchlistGroups = [..._watchlistGroups, newGroup];
         _selectedGroupId = newGroup.id;
+        _selectedGroupIdsByAssetClass[_selectedAssetClass] = newGroup.id;
         _instruments = List<_Instrument>.of(newGroup.instruments);
       });
       _saveWatchlistGroups();
@@ -561,10 +633,17 @@ class _TradingScreenState extends ConsumerState<TradingScreen> {
   }
 
   Future<void> _deleteSelectedGroup() async {
-    if (_watchlistGroups.length <= 1) {
+    final assetGroups = _groupsForAssetClass(_selectedAssetClass);
+    if (assetGroups.length <= 1) {
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(const SnackBar(content: Text('마지막 그룹은 삭제할 수 없습니다.')));
+      ).showSnackBar(
+        SnackBar(
+          content: Text(
+            '${_selectedAssetClass.label} 탭의 마지막 그룹은 삭제할 수 없습니다.',
+          ),
+        ),
+      );
       return;
     }
     final group = _selectedGroup;
@@ -590,23 +669,15 @@ class _TradingScreenState extends ConsumerState<TradingScreen> {
 
     final remaining =
         _watchlistGroups.where((item) => item.id != group.id).toList();
-    final nextGroup = remaining.first;
-    final nextAssetClass = _preferredAssetClassForGroup(
-      nextGroup,
-      _selectedAssetClass,
+    final nextGroup = remaining.firstWhere(
+      (item) => item.assetClass == _selectedAssetClass,
     );
-    final nextVisibleInstruments = [
-      for (final instrument in nextGroup.instruments)
-        if (instrument.assetClass == nextAssetClass) instrument,
-    ];
     setState(() {
       _watchlistGroups = remaining;
       _selectedGroupId = nextGroup.id;
-      _selectedAssetClass = nextAssetClass;
+      _selectedGroupIdsByAssetClass[_selectedAssetClass] = nextGroup.id;
       _instruments = List<_Instrument>.of(nextGroup.instruments);
-      _selectedInstrument = nextVisibleInstruments.isNotEmpty
-          ? nextVisibleInstruments.first
-          : _defaultInstrumentForAssetClass(nextAssetClass);
+      _selectedInstrument = _instruments.first;
     });
     _saveWatchlistGroups();
   }
@@ -625,18 +696,7 @@ class _TradingScreenState extends ConsumerState<TradingScreen> {
     setState(() {
       _replaceSelectedGroupInstruments(nextInstruments);
       if (_selectedInstrument.assetKey == instrument.assetKey) {
-        final nextAssetClass = _preferredAssetClassForInstruments(
-          nextInstruments,
-          _selectedAssetClass,
-        );
-        final visible = [
-          for (final item in nextInstruments)
-            if (item.assetClass == nextAssetClass) item,
-        ];
-        _selectedAssetClass = nextAssetClass;
-        _selectedInstrument = visible.isNotEmpty
-            ? visible.first
-            : _defaultInstrumentForAssetClass(nextAssetClass);
+        _selectedInstrument = nextInstruments.first;
       }
     });
     _saveWatchlistGroups();
@@ -648,6 +708,7 @@ class _TradingScreenState extends ConsumerState<TradingScreen> {
   @override
   Widget build(BuildContext context) {
     final visibleInstruments = _visibleInstruments;
+    final assetGroups = _groupsForAssetClass(_selectedAssetClass);
     final tabs = [
       _TradingHomeTab(
         instruments: _instruments,
@@ -658,7 +719,7 @@ class _TradingScreenState extends ConsumerState<TradingScreen> {
       _MarketTab(
         selectedAssetClass: _selectedAssetClass,
         onAssetClassChanged: _selectAssetClass,
-        groups: _watchlistGroups,
+        groups: assetGroups,
         selectedGroupId: _selectedGroupId,
         instruments: visibleInstruments,
         selectedInstrument: _selectedInstrument,
@@ -4313,15 +4374,17 @@ class _Metric {
 class _WatchlistGroup {
   const _WatchlistGroup({
     required this.id,
+    required this.assetClass,
     required this.name,
     required this.instruments,
   });
 
   final String id;
+  final _AssetClass assetClass;
   final String name;
   final List<_Instrument> instruments;
 
-  static _WatchlistGroup? fromJson(Map<String, Object?> json) {
+  static List<_WatchlistGroup> fromJson(Map<String, Object?> json) {
     final id = json['id'];
     final name = json['name'];
     final rawInstruments = json['instruments'];
@@ -4330,19 +4393,52 @@ class _WatchlistGroup {
         name is! String ||
         name.trim().isEmpty ||
         rawInstruments is! List) {
-      return null;
+      return const [];
     }
     final instruments = [
       for (final item in rawInstruments)
         if (item is Map) _Instrument.fromJson(Map<String, Object?>.from(item)),
     ].whereType<_Instrument>().toList();
-    if (instruments.isEmpty) return null;
-    return _WatchlistGroup(id: id, name: name, instruments: instruments);
+    if (instruments.isEmpty) return const [];
+
+    final assetClassValue = json['asset_class'];
+    if (assetClassValue is String && assetClassValue.trim().isNotEmpty) {
+      final assetClass = _assetClassFromStorage(assetClassValue);
+      final filtered = [
+        for (final instrument in instruments)
+          if (instrument.assetClass == assetClass) instrument,
+      ];
+      if (filtered.isEmpty) return const [];
+      return [
+        _WatchlistGroup(
+          id: id,
+          assetClass: assetClass,
+          name: name,
+          instruments: filtered,
+        ),
+      ];
+    }
+
+    return [
+      for (final assetClass in _AssetClass.values)
+        if (instruments
+            .any((instrument) => instrument.assetClass == assetClass))
+          _WatchlistGroup(
+            id: _assetScopedWatchlistGroupId(id, assetClass),
+            assetClass: assetClass,
+            name: name,
+            instruments: [
+              for (final instrument in instruments)
+                if (instrument.assetClass == assetClass) instrument,
+            ],
+          ),
+    ];
   }
 
   Map<String, Object?> toJson() {
     return {
       'id': id,
+      'asset_class': assetClass.storageValue,
       'name': name,
       'instruments':
           instruments.map((instrument) => instrument.toJson()).toList(),
@@ -4355,9 +4451,15 @@ class _WatchlistGroup {
         .length;
   }
 
-  _WatchlistGroup copyWith({String? name, List<_Instrument>? instruments}) {
+  _WatchlistGroup copyWith({
+    String? id,
+    _AssetClass? assetClass,
+    String? name,
+    List<_Instrument>? instruments,
+  }) {
     return _WatchlistGroup(
-      id: id,
+      id: id ?? this.id,
+      assetClass: assetClass ?? this.assetClass,
       name: name ?? this.name,
       instruments: instruments ?? this.instruments,
     );
