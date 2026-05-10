@@ -148,14 +148,17 @@ Firebase provider 연결 상태를 저장한다. Google, Apple, Facebook, email/
 
 ### `instruments`
 
-거래 가능한 종목 마스터다. KIS 종목정보파일 또는 별도 데이터 소스에서 동기화한다.
+거래 가능한 종목 마스터다. KIS 종목정보파일, 해외 시세 소스, 코인 거래소 마켓 데이터 등에서 동기화한다.
 
 주요 컬럼:
+- `asset_class`: `domestic_stock`, `overseas_stock`, `crypto`
+- `asset_code`: `DOMESTIC:KOSPI:005930`, `OVERSEAS:NASDAQ:AAPL`, `CRYPTO:UPBIT:BTC-KRW` 같은 공통 식별자
 - `market`: `KRX`, `NXT`, `NASDAQ`, `NYSE` 등
+- `market_code`: 브로커/거래소 API 호출용 시장 코드
 - `symbol`
 - `name_ko`, `name_en`
 - `instrument_type`: `stock`, `etf`, `etn`, `reit` 등
-- `currency`
+- `currency`, `quote_currency`, `base_currency`
 - `is_tradable`
 
 ### `trade_orders`

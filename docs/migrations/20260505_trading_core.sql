@@ -36,6 +36,9 @@ BEGIN
     IF to_regtype('metaserver.instrument_type') IS NULL THEN
         CREATE TYPE metaserver.instrument_type AS ENUM ('stock', 'etf', 'etn', 'reit', 'index', 'other');
     END IF;
+    IF to_regtype('metaserver.asset_class') IS NULL THEN
+        CREATE TYPE metaserver.asset_class AS ENUM ('domestic_stock', 'overseas_stock', 'crypto');
+    END IF;
     IF to_regtype('metaserver.order_side') IS NULL THEN
         CREATE TYPE metaserver.order_side AS ENUM ('buy', 'sell');
     END IF;
@@ -162,17 +165,23 @@ EXECUTE PROCEDURE metaserver.touch_updated_at();
 
 CREATE TABLE IF NOT EXISTS instruments (
     id uuid PRIMARY KEY DEFAULT metaserver.ms_generate_uuid(),
+    asset_class asset_class NOT NULL DEFAULT 'domestic_stock',
+    asset_code text,
     market text NOT NULL,
+    market_code text,
     symbol text NOT NULL,
     isin text,
     name_ko text NOT NULL,
     name_en text,
     instrument_type instrument_type NOT NULL DEFAULT 'stock',
     currency text NOT NULL DEFAULT 'KRW',
+    quote_currency text,
+    base_currency text,
     exchange_name text,
     is_tradable boolean NOT NULL DEFAULT true,
     lot_size numeric(20, 6) NOT NULL DEFAULT 1,
     tick_size numeric(20, 6),
+    price_scale numeric(20, 8) NOT NULL DEFAULT 1,
     listed_at date,
     delisted_at date,
     raw_payload jsonb NOT NULL DEFAULT '{}'::jsonb,
@@ -181,9 +190,22 @@ CREATE TABLE IF NOT EXISTS instruments (
     UNIQUE (market, symbol)
 );
 
+ALTER TABLE instruments
+    ADD COLUMN IF NOT EXISTS asset_class asset_class NOT NULL DEFAULT 'domestic_stock',
+    ADD COLUMN IF NOT EXISTS asset_code text,
+    ADD COLUMN IF NOT EXISTS market_code text,
+    ADD COLUMN IF NOT EXISTS quote_currency text,
+    ADD COLUMN IF NOT EXISTS base_currency text,
+    ADD COLUMN IF NOT EXISTS price_scale numeric(20, 8) NOT NULL DEFAULT 1;
+
 CREATE INDEX IF NOT EXISTS ix_instruments_symbol ON instruments(symbol);
 CREATE INDEX IF NOT EXISTS ix_instruments_name_ko ON instruments(name_ko);
 CREATE INDEX IF NOT EXISTS ix_instruments_tradable ON instruments(market, is_tradable);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_instruments_asset_code
+    ON instruments(asset_code)
+    WHERE asset_code IS NOT NULL;
+CREATE INDEX IF NOT EXISTS ix_instruments_asset_class_market
+    ON instruments(asset_class, market, symbol);
 
 DROP TRIGGER IF EXISTS trg_instruments_updated_at ON instruments;
 CREATE TRIGGER trg_instruments_updated_at
@@ -404,8 +426,12 @@ CREATE TABLE IF NOT EXISTS market_quote_snapshots (
     id uuid PRIMARY KEY DEFAULT metaserver.ms_generate_uuid(),
     instrument_id uuid NOT NULL REFERENCES instruments(id) ON DELETE CASCADE,
     broker broker_code NOT NULL DEFAULT 'kis',
+    asset_class asset_class NOT NULL DEFAULT 'domestic_stock',
+    asset_code text,
     market text NOT NULL,
     symbol text NOT NULL,
+    quote_currency text,
+    base_currency text,
     trade_price numeric(20, 6),
     open_price numeric(20, 6),
     high_price numeric(20, 6),
@@ -420,16 +446,28 @@ CREATE TABLE IF NOT EXISTS market_quote_snapshots (
     created_at timestamptz NOT NULL DEFAULT now()
 );
 
+ALTER TABLE market_quote_snapshots
+    ADD COLUMN IF NOT EXISTS asset_class asset_class NOT NULL DEFAULT 'domestic_stock',
+    ADD COLUMN IF NOT EXISTS asset_code text,
+    ADD COLUMN IF NOT EXISTS quote_currency text,
+    ADD COLUMN IF NOT EXISTS base_currency text;
+
 CREATE INDEX IF NOT EXISTS ix_market_quote_snapshots_symbol_time
     ON market_quote_snapshots(market, symbol, quote_time DESC);
 CREATE INDEX IF NOT EXISTS ix_market_quote_snapshots_instrument_time
     ON market_quote_snapshots(instrument_id, quote_time DESC);
+CREATE INDEX IF NOT EXISTS ix_market_quote_snapshots_asset_time
+    ON market_quote_snapshots(asset_class, market, symbol, quote_time DESC);
 
 CREATE TABLE IF NOT EXISTS trading_daily_bars (
     id uuid PRIMARY KEY DEFAULT metaserver.ms_generate_uuid(),
     instrument_id uuid NOT NULL REFERENCES instruments(id) ON DELETE CASCADE,
+    asset_class asset_class NOT NULL DEFAULT 'domestic_stock',
+    asset_code text,
     market text NOT NULL,
     symbol text NOT NULL,
+    quote_currency text,
+    base_currency text,
     trade_date date NOT NULL,
     open_price numeric(20, 6),
     high_price numeric(20, 6),
@@ -444,8 +482,16 @@ CREATE TABLE IF NOT EXISTS trading_daily_bars (
     UNIQUE (instrument_id, trade_date, adjusted)
 );
 
+ALTER TABLE trading_daily_bars
+    ADD COLUMN IF NOT EXISTS asset_class asset_class NOT NULL DEFAULT 'domestic_stock',
+    ADD COLUMN IF NOT EXISTS asset_code text,
+    ADD COLUMN IF NOT EXISTS quote_currency text,
+    ADD COLUMN IF NOT EXISTS base_currency text;
+
 CREATE INDEX IF NOT EXISTS ix_trading_daily_bars_symbol_date
     ON trading_daily_bars(market, symbol, trade_date DESC);
+CREATE INDEX IF NOT EXISTS ix_trading_daily_bars_asset_date
+    ON trading_daily_bars(asset_class, market, symbol, trade_date DESC);
 
 DROP TRIGGER IF EXISTS trg_trading_daily_bars_updated_at ON trading_daily_bars;
 CREATE TRIGGER trg_trading_daily_bars_updated_at

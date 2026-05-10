@@ -102,6 +102,7 @@ def _evaluate_strategy(
     strategy: dict[str, Any],
 ) -> dict[str, Any] | None:
     config = _as_dict(strategy.get("config"))
+    asset_class = str(config.get("asset_class") or "domestic_stock")
     symbol = _symbol(config)
     if symbol is None:
         _event(
@@ -113,10 +114,34 @@ def _evaluate_strategy(
             "전략에 평가할 종목코드가 없어 건너뛰었습니다.",
         )
         return None
+    if asset_class == "domestic_stock" and (
+        not symbol.isdigit() or len(symbol) != 6
+    ):
+        _event(
+            conn,
+            user_id,
+            strategy,
+            "warning",
+            "strategy.invalid_domestic_symbol",
+            f"국내주식 종목코드는 6자리 숫자여야 합니다: {symbol}",
+        )
+        return None
+    if asset_class != "domestic_stock":
+        _event(
+            conn,
+            user_id,
+            strategy,
+            "warning",
+            "strategy.asset_adapter_pending",
+            f"{asset_class} quote/order adapter is not connected yet: {symbol}",
+        )
+        return None
 
     directory_item = _directory_item(symbol)
     name = directory_item.name if directory_item is not None else symbol
-    market = directory_item.market if directory_item is not None else "KOSPI"
+    market = str(config.get("market") or "").strip().upper()
+    if not market:
+        market = directory_item.market if directory_item is not None else "KOSPI"
 
     environment = BrokerEnvironment(str(strategy.get("environment") or "paper"))
     client = get_kis_client()
@@ -141,7 +166,10 @@ def _evaluate_strategy(
     instrument = trading.upsert_instrument(
         conn,
         InstrumentUpsert(
+            asset_class="domestic_stock",
+            asset_code=f"DOMESTIC:{market}:{symbol}",
             market=market,
+            market_code="KRX",
             symbol=symbol,
             isin=directory_item.standard_code if directory_item is not None else None,
             name_ko=name,
@@ -563,9 +591,12 @@ def _directory_item(symbol: str):
 
 def _symbol(config: dict[str, Any]) -> str | None:
     symbol = str(config.get("symbol") or config.get("stock_code") or "").strip()
-    if symbol.isdigit() and len(symbol) <= 6:
-        return symbol.zfill(6)
-    return None
+    if not symbol:
+        return None
+    cleaned = "".join(ch for ch in symbol.upper() if ch.isalnum() or ch in {":", "/", "_", "-"})
+    if cleaned.isdigit() and len(cleaned) <= 6:
+        return cleaned.zfill(6)
+    return cleaned or None
 
 
 def _holding_quantity(portfolio: Any, symbol: str) -> int:

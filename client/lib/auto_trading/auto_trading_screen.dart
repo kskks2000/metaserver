@@ -11,6 +11,40 @@ import 'auto_trading_repository.dart';
 
 enum _AutoTab { dashboard, strategy, execution, risk }
 
+const _autoAssetLabels = {
+  'domestic_stock': '국내',
+  'overseas_stock': '해외',
+  'crypto': '코인',
+};
+
+String _autoAssetLabel(String? assetClass) {
+  return _autoAssetLabels[assetClass] ?? '국내';
+}
+
+String _defaultMarketForAutoAsset(String assetClass) {
+  return switch (assetClass) {
+    'overseas_stock' => 'NASDAQ',
+    'crypto' => 'UPBIT',
+    _ => 'KOSPI',
+  };
+}
+
+List<String> _marketsForAutoAsset(String assetClass) {
+  return switch (assetClass) {
+    'overseas_stock' => const ['NASDAQ', 'NYSE', 'AMEX'],
+    'crypto' => const ['UPBIT', 'BITHUMB', 'BINANCE'],
+    _ => const ['KOSPI', 'KOSDAQ', 'ETF', 'ETN'],
+  };
+}
+
+String _symbolHintForAutoAsset(String assetClass) {
+  return switch (assetClass) {
+    'overseas_stock' => 'AAPL',
+    'crypto' => 'BTC-KRW',
+    _ => '005930',
+  };
+}
+
 class AutoTradingScreen extends ConsumerStatefulWidget {
   const AutoTradingScreen({super.key});
 
@@ -620,6 +654,8 @@ class _StrategyTabState extends State<_StrategyTab> {
   final _maxLossController = TextEditingController(
     text: formatIntegerInputText('100000'),
   );
+  String _assetClass = 'domestic_stock';
+  String _market = 'KOSPI';
   String _strategyType = 'momentum';
   String _signalSide = 'buy';
   int _cooldownSeconds = 90;
@@ -658,15 +694,69 @@ class _StrategyTabState extends State<_StrategyTab> {
                 minLines: 2,
               ),
               const SizedBox(height: 14),
+              _FieldTitle(icon: Icons.public_rounded, label: '거래 자산'),
+              const SizedBox(height: 8),
+              SegmentedButton<String>(
+                selected: {_assetClass},
+                onSelectionChanged: (value) {
+                  final nextAssetClass = value.first;
+                  setState(() {
+                    _assetClass = nextAssetClass;
+                    _market = _defaultMarketForAutoAsset(nextAssetClass);
+                    _symbolController.text =
+                        _symbolHintForAutoAsset(nextAssetClass);
+                  });
+                },
+                showSelectedIcon: false,
+                segments: const [
+                  ButtonSegment(
+                    value: 'domestic_stock',
+                    icon: Icon(Icons.flag_circle_outlined),
+                    label: Text('국내'),
+                  ),
+                  ButtonSegment(
+                    value: 'overseas_stock',
+                    icon: Icon(Icons.public_rounded),
+                    label: Text('해외'),
+                  ),
+                  ButtonSegment(
+                    value: 'crypto',
+                    icon: Icon(Icons.currency_bitcoin_rounded),
+                    label: Text('코인'),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
               Row(
                 children: [
+                  Expanded(
+                    child: DropdownButtonFormField<String>(
+                      initialValue: _market,
+                      decoration: const InputDecoration(
+                        labelText: '시장',
+                        prefixIcon: Icon(Icons.account_balance_outlined),
+                      ),
+                      items: [
+                        for (final market in _marketsForAutoAsset(_assetClass))
+                          DropdownMenuItem(value: market, child: Text(market)),
+                      ],
+                      onChanged: (value) {
+                        if (value == null) return;
+                        setState(() => _market = value);
+                      },
+                    ),
+                  ),
+                  const SizedBox(width: 10),
                   Expanded(
                     child: _TextInput(
                       controller: _symbolController,
                       label: '종목코드',
                       icon: Icons.tag_rounded,
-                      keyboardType: TextInputType.number,
-                      digitsOnly: true,
+                      hintText: _symbolHintForAutoAsset(_assetClass),
+                      keyboardType: _assetClass == 'domestic_stock'
+                          ? TextInputType.number
+                          : TextInputType.text,
+                      digitsOnly: _assetClass == 'domestic_stock',
                     ),
                   ),
                   const SizedBox(width: 10),
@@ -838,6 +928,8 @@ class _StrategyTabState extends State<_StrategyTab> {
             : _nameController.text.trim(),
         description: _descriptionController.text.trim(),
         strategyType: _strategyType,
+        assetClass: _assetClass,
+        market: _market,
         symbol: _symbolController.text.trim(),
         signalSide: _signalSide,
         triggerChangeRate: _triggerController.text.trim().isEmpty
@@ -1351,6 +1443,8 @@ class _StrategyCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final assetClass = strategy.config['asset_class']?.toString();
+    final market = strategy.config['market']?.toString();
     final symbol = strategy.config['symbol']?.toString();
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
@@ -1380,6 +1474,8 @@ class _StrategyCard extends StatelessWidget {
                       [
                         _strategyLabel(strategy.strategyType),
                         strategy.environment == 'live' ? '실전' : '모의',
+                        _autoAssetLabel(assetClass),
+                        if (market != null && market.isNotEmpty) market,
                         if (symbol != null && symbol.isNotEmpty) symbol,
                       ].join(' · '),
                       style: TextStyle(
@@ -1454,6 +1550,8 @@ class _CompactStrategyRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final assetClass = strategy.config['asset_class']?.toString();
+    final market = strategy.config['market']?.toString();
     final symbol = strategy.config['symbol']?.toString();
     return Container(
       margin: const EdgeInsets.only(bottom: 10),
@@ -1481,6 +1579,8 @@ class _CompactStrategyRow extends StatelessWidget {
                 Text(
                   [
                     _strategyLabel(strategy.strategyType),
+                    _autoAssetLabel(assetClass),
+                    if (market != null && market.isNotEmpty) market,
                     if (symbol != null && symbol.isNotEmpty) symbol,
                     strategy.environment == 'live' ? '실전' : '모의',
                   ].join(' · '),
@@ -1805,6 +1905,7 @@ class _TextInput extends StatelessWidget {
     required this.controller,
     required this.label,
     required this.icon,
+    this.hintText,
     this.keyboardType,
     this.minLines = 1,
     this.digitsOnly = false,
@@ -1813,6 +1914,7 @@ class _TextInput extends StatelessWidget {
   final TextEditingController controller;
   final String label;
   final IconData icon;
+  final String? hintText;
   final TextInputType? keyboardType;
   final int minLines;
   final bool digitsOnly;
@@ -1832,6 +1934,7 @@ class _TextInput extends StatelessWidget {
       maxLines: minLines == 1 ? 1 : 4,
       decoration: InputDecoration(
         labelText: label,
+        hintText: hintText,
         prefixIcon: Icon(icon),
       ),
       style: const TextStyle(fontWeight: FontWeight.w800),

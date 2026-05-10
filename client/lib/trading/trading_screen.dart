@@ -15,6 +15,38 @@ import 'trading_repository.dart';
 
 enum _TradeSide { buy, sell }
 
+enum _AssetClass { domesticStock, overseasStock, crypto }
+
+extension _AssetClassMeta on _AssetClass {
+  String get storageValue => switch (this) {
+        _AssetClass.domesticStock => 'domestic_stock',
+        _AssetClass.overseasStock => 'overseas_stock',
+        _AssetClass.crypto => 'crypto',
+      };
+
+  String get label => switch (this) {
+        _AssetClass.domesticStock => '국내',
+        _AssetClass.overseasStock => '해외',
+        _AssetClass.crypto => '코인',
+      };
+
+  IconData get icon => switch (this) {
+        _AssetClass.domesticStock => Icons.flag_circle_outlined,
+        _AssetClass.overseasStock => Icons.public_rounded,
+        _AssetClass.crypto => Icons.currency_bitcoin_rounded,
+      };
+
+  bool get usesDomesticKisApi => this == _AssetClass.domesticStock;
+}
+
+_AssetClass _assetClassFromStorage(Object? value) {
+  return switch (value?.toString()) {
+    'overseas_stock' => _AssetClass.overseasStock,
+    'crypto' => _AssetClass.crypto,
+    _ => _AssetClass.domesticStock,
+  };
+}
+
 const _watchlistStorageKey = 'metaserver.trading.watchlist.custom.v1';
 const _watchlistGroupsStorageKey = 'metaserver.trading.watchlist.groups.v1';
 const _defaultWatchlistGroupId = 'default';
@@ -29,6 +61,7 @@ class TradingScreen extends ConsumerStatefulWidget {
 class _TradingScreenState extends ConsumerState<TradingScreen> {
   int _tabIndex = 0;
   _TradeSide _tradeSide = _TradeSide.buy;
+  _AssetClass _selectedAssetClass = _AssetClass.domesticStock;
   late List<_WatchlistGroup> _watchlistGroups;
   late String _selectedGroupId;
   late List<_Instrument> _instruments;
@@ -45,7 +78,7 @@ class _TradingScreenState extends ConsumerState<TradingScreen> {
     _watchlistGroups = _restoreWatchlistGroups();
     _selectedGroupId = _watchlistGroups.first.id;
     _instruments = List<_Instrument>.of(_watchlistGroups.first.instruments);
-    _selectedInstrument = _instruments.first;
+    _selectedInstrument = _visibleInstruments.first;
     _portfolioFuture = _loadPortfolio();
     _kisStatusFuture = _loadKisStatus();
     Future.microtask(() => _refreshWatchlistQuotes(showMessage: false));
@@ -86,8 +119,8 @@ class _TradingScreenState extends ConsumerState<TradingScreen> {
     try {
       final decoded = jsonDecode(saved);
       if (decoded is! List) return instruments;
-      final defaultSymbols =
-          _defaultInstruments.map((instrument) => instrument.symbol).toSet();
+      final defaultKeys =
+          _defaultInstruments.map((instrument) => instrument.assetKey).toSet();
       for (final item in decoded) {
         if (item is! Map) continue;
         final instrument = _Instrument.fromJson(
@@ -95,9 +128,9 @@ class _TradingScreenState extends ConsumerState<TradingScreen> {
         );
         if (instrument == null) continue;
         final alreadyListed = instruments.any(
-          (current) => current.symbol == instrument.symbol,
+          (current) => current.assetKey == instrument.assetKey,
         );
-        if (!alreadyListed && !defaultSymbols.contains(instrument.symbol)) {
+        if (!alreadyListed && !defaultKeys.contains(instrument.assetKey)) {
           instruments.add(instrument);
         }
       }
@@ -112,6 +145,28 @@ class _TradingScreenState extends ConsumerState<TradingScreen> {
       (group) => group.id == _selectedGroupId,
       orElse: () => _watchlistGroups.first,
     );
+  }
+
+  List<_Instrument> get _visibleInstruments {
+    final filtered = [
+      for (final instrument in _instruments)
+        if (instrument.assetClass == _selectedAssetClass) instrument,
+    ];
+    if (filtered.isNotEmpty) return filtered;
+    return [_defaultInstrumentForAssetClass(_selectedAssetClass)];
+  }
+
+  void _selectAssetClass(_AssetClass assetClass) {
+    if (_selectedAssetClass == assetClass) return;
+    final nextInstrument = _instruments.firstWhere(
+      (instrument) => instrument.assetClass == assetClass,
+      orElse: () => _defaultInstrumentForAssetClass(assetClass),
+    );
+    setState(() {
+      _selectedAssetClass = assetClass;
+      _selectedInstrument = nextInstrument;
+    });
+    Future.microtask(() => _refreshWatchlistQuotes(showMessage: false));
   }
 
   void _saveWatchlistGroups() {
@@ -141,9 +196,9 @@ class _TradingScreenState extends ConsumerState<TradingScreen> {
       _selectedGroupId = group.id;
       _instruments = List<_Instrument>.of(group.instruments);
       if (!_instruments.any(
-        (instrument) => instrument.symbol == _selectedInstrument.symbol,
+        (instrument) => instrument.assetKey == _selectedInstrument.assetKey,
       )) {
-        _selectedInstrument = _instruments.first;
+        _selectedInstrument = _visibleInstruments.first;
       }
     });
     Future.microtask(() => _refreshWatchlistQuotes(showMessage: false));
@@ -189,6 +244,18 @@ class _TradingScreenState extends ConsumerState<TradingScreen> {
 
   Future<void> _refreshSelectedQuote({bool showMessage = true}) async {
     if (_quoteLoading) return;
+    if (!_selectedInstrument.assetClass.usesDomesticKisApi) {
+      if (showMessage) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              '${_selectedInstrument.assetClass.label} 시세 어댑터는 준비 중입니다.',
+            ),
+          ),
+        );
+      }
+      return;
+    }
     setState(() => _quoteLoading = true);
     try {
       final quote = await ref
@@ -200,7 +267,10 @@ class _TradingScreenState extends ConsumerState<TradingScreen> {
         _selectedInstrument = updated;
         _replaceSelectedGroupInstruments([
           for (final instrument in _instruments)
-            if (instrument.symbol == updated.symbol) updated else instrument,
+            if (instrument.assetKey == updated.assetKey)
+              updated
+            else
+              instrument,
         ]);
       });
       _saveWatchlistGroups();
@@ -211,9 +281,11 @@ class _TradingScreenState extends ConsumerState<TradingScreen> {
       }
     } catch (error) {
       if (!mounted) return;
-      final message = isRecoverableApiFailure(error)
-          ? 'KIS 조회에 실패했습니다. 백엔드 KIS 키와 계좌 설정을 확인해 주세요.'
-          : error.toString();
+      final message = !_selectedAssetClass.usesDomesticKisApi
+          ? '${_selectedAssetClass.label} 실시간 시세 어댑터는 준비 중입니다.'
+          : isRecoverableApiFailure(error)
+              ? 'KIS 조회에 실패했습니다. 백엔드 KIS 키와 계좌 설정을 확인해 주세요.'
+              : error.toString();
       if (showMessage) {
         ScaffoldMessenger.of(
           context,
@@ -229,10 +301,17 @@ class _TradingScreenState extends ConsumerState<TradingScreen> {
     setState(() => _quoteLoading = true);
     var refreshedCount = 0;
     final refreshingGroupId = _selectedGroupId;
-    final instrumentsSnapshot = List<_Instrument>.of(_instruments);
-    final refreshedInstruments = List<_Instrument>.of(instrumentsSnapshot);
+    final instrumentsSnapshot = List<_Instrument>.of(_visibleInstruments)
+        .where((instrument) => instrument.assetClass.usesDomesticKisApi)
+        .toList();
+    final refreshedInstruments = List<_Instrument>.of(_instruments);
     var refreshedSelectedInstrument = _selectedInstrument;
     try {
+      if (instrumentsSnapshot.isEmpty) {
+        throw StateError(
+          'No live quote adapter is available for this asset class.',
+        );
+      }
       final repository = ref.read(tradingRepositoryProvider);
       for (var index = 0; index < instrumentsSnapshot.length; index++) {
         final instrument = instrumentsSnapshot[index];
@@ -241,8 +320,13 @@ class _TradingScreenState extends ConsumerState<TradingScreen> {
           if (!mounted) return;
           final updated = _mergeQuote(instrument, quote);
           refreshedCount += 1;
-          refreshedInstruments[index] = updated;
-          if (refreshedSelectedInstrument.symbol == updated.symbol) {
+          final fullIndex = refreshedInstruments.indexWhere(
+            (item) => item.assetKey == updated.assetKey,
+          );
+          if (fullIndex >= 0) {
+            refreshedInstruments[fullIndex] = updated;
+          }
+          if (refreshedSelectedInstrument.assetKey == updated.assetKey) {
             refreshedSelectedInstrument = updated;
           }
         } catch (_) {
@@ -276,9 +360,11 @@ class _TradingScreenState extends ConsumerState<TradingScreen> {
       }
     } catch (error) {
       if (!mounted) return;
-      final message = isRecoverableApiFailure(error)
-          ? 'KIS 조회에 실패했습니다. API 도메인과 계정 설정을 확인해 주세요.'
-          : error.toString();
+      final message = !_selectedAssetClass.usesDomesticKisApi
+          ? '${_selectedAssetClass.label} 실시간 시세 어댑터는 준비 중입니다.'
+          : isRecoverableApiFailure(error)
+              ? 'KIS 조회에 실패했습니다. API 도메인과 계정 설정을 확인해 주세요.'
+              : error.toString();
       if (showMessage) {
         ScaffoldMessenger.of(
           context,
@@ -294,7 +380,8 @@ class _TradingScreenState extends ConsumerState<TradingScreen> {
     final draft = await showDialog<_InstrumentDraft>(
       context: context,
       builder: (context) => _AddInstrumentDialog(
-        existingSymbols: _instruments.map((item) => item.symbol).toSet(),
+        assetClass: _selectedAssetClass,
+        existingAssetKeys: _instruments.map((item) => item.assetKey).toSet(),
       ),
     );
     if (draft == null || !mounted) return;
@@ -302,7 +389,10 @@ class _TradingScreenState extends ConsumerState<TradingScreen> {
     setState(() => _quoteLoading = true);
     DomesticStockQuote? quote;
     try {
-      quote = await ref.read(tradingRepositoryProvider).loadQuote(draft.symbol);
+      if (draft.assetClass.usesDomesticKisApi) {
+        quote =
+            await ref.read(tradingRepositoryProvider).loadQuote(draft.symbol);
+      }
     } catch (_) {
       quote = null;
     }
@@ -468,12 +558,12 @@ class _TradingScreenState extends ConsumerState<TradingScreen> {
     }
     final nextInstruments = [
       for (final item in _instruments)
-        if (item.symbol != instrument.symbol) item,
+        if (item.assetKey != instrument.assetKey) item,
     ];
     setState(() {
       _replaceSelectedGroupInstruments(nextInstruments);
-      if (_selectedInstrument.symbol == instrument.symbol) {
-        _selectedInstrument = nextInstruments.first;
+      if (_selectedInstrument.assetKey == instrument.assetKey) {
+        _selectedInstrument = _visibleInstruments.first;
       }
     });
     _saveWatchlistGroups();
@@ -484,6 +574,7 @@ class _TradingScreenState extends ConsumerState<TradingScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final visibleInstruments = _visibleInstruments;
     final tabs = [
       _TradingHomeTab(
         instruments: _instruments,
@@ -492,9 +583,11 @@ class _TradingScreenState extends ConsumerState<TradingScreen> {
         onOrder: _openOrder,
       ),
       _MarketTab(
+        selectedAssetClass: _selectedAssetClass,
+        onAssetClassChanged: _selectAssetClass,
         groups: _watchlistGroups,
         selectedGroupId: _selectedGroupId,
-        instruments: _instruments,
+        instruments: visibleInstruments,
         selectedInstrument: _selectedInstrument,
         onGroupSelected: _selectWatchlistGroup,
         onCreateGroup: _showCreateGroupDialog,
@@ -617,6 +710,7 @@ _Instrument _instrumentFromQuote(
     throw StateError('KIS current price is unavailable.');
   }
   return _Instrument(
+    assetClass: draft.assetClass,
     market: draft.market,
     symbol: draft.symbol,
     name: draft.name.isNotEmpty ? draft.name : draft.symbol,
@@ -633,8 +727,12 @@ _Instrument _instrumentFromQuote(
 }
 
 _Instrument _instrumentFromDraft(_InstrumentDraft draft) {
-  final catalogItem = _stockCatalogItemBySymbol(draft.symbol);
+  final catalogItem = _stockCatalogItemBySymbol(
+    draft.symbol,
+    assetClass: draft.assetClass,
+  );
   return _Instrument(
+    assetClass: draft.assetClass,
     market: draft.market,
     symbol: draft.symbol,
     name: draft.name.isNotEmpty
@@ -656,26 +754,79 @@ _Instrument _instrumentFromDraft(_InstrumentDraft draft) {
 
 class _InstrumentDraft {
   const _InstrumentDraft({
+    required this.assetClass,
     required this.market,
     required this.symbol,
     required this.name,
     required this.sector,
   });
 
+  final _AssetClass assetClass;
   final String market;
   final String symbol;
   final String name;
   final String sector;
+
+  String get assetKey => _assetKey(assetClass, market, symbol);
 }
 
-String _normalizeStockSymbol(String value) {
-  return value.replaceAll(RegExp(r'[^0-9]'), '');
+String _normalizeAssetSymbol(String value, _AssetClass assetClass) {
+  final trimmed = value.trim().toUpperCase();
+  return switch (assetClass) {
+    _AssetClass.domesticStock => trimmed.replaceAll(RegExp(r'[^0-9]'), ''),
+    _AssetClass.overseasStock =>
+      trimmed.replaceAll(RegExp(r'[^A-Z0-9./-]'), ''),
+    _AssetClass.crypto => trimmed
+        .replaceAll('/', '-')
+        .replaceAll('_', '-')
+        .replaceAll(RegExp(r'[^A-Z0-9:-]'), ''),
+  };
+}
+
+String _assetKey(_AssetClass assetClass, String market, String symbol) {
+  return '${assetClass.storageValue}:${market.toUpperCase()}:${symbol.toUpperCase()}';
+}
+
+String _defaultMarketForAssetClass(_AssetClass assetClass) {
+  return switch (assetClass) {
+    _AssetClass.domesticStock => 'KOSPI',
+    _AssetClass.overseasStock => 'NASDAQ',
+    _AssetClass.crypto => 'UPBIT',
+  };
+}
+
+String _symbolHint(_AssetClass assetClass) {
+  return switch (assetClass) {
+    _AssetClass.domesticStock => '005930',
+    _AssetClass.overseasStock => 'AAPL',
+    _AssetClass.crypto => 'BTC-KRW',
+  };
+}
+
+String _searchHint(_AssetClass assetClass) {
+  return switch (assetClass) {
+    _AssetClass.domesticStock => '예: 하이닉스, 삼성전자, 005930',
+    _AssetClass.overseasStock => '예: Apple, NVIDIA, AAPL',
+    _AssetClass.crypto => '예: Bitcoin, Ethereum, BTC-KRW',
+  };
+}
+
+List<String> _marketsForAssetClass(_AssetClass assetClass) {
+  return switch (assetClass) {
+    _AssetClass.domesticStock => const ['KOSPI', 'KOSDAQ', 'ETF', 'ETN'],
+    _AssetClass.overseasStock => const ['NASDAQ', 'NYSE', 'AMEX'],
+    _AssetClass.crypto => const ['UPBIT', 'BITHUMB', 'BINANCE'],
+  };
 }
 
 class _AddInstrumentDialog extends ConsumerStatefulWidget {
-  const _AddInstrumentDialog({required this.existingSymbols});
+  const _AddInstrumentDialog({
+    required this.assetClass,
+    required this.existingAssetKeys,
+  });
 
-  final Set<String> existingSymbols;
+  final _AssetClass assetClass;
+  final Set<String> existingAssetKeys;
 
   @override
   ConsumerState<_AddInstrumentDialog> createState() =>
@@ -689,7 +840,7 @@ class _AddInstrumentDialogState extends ConsumerState<_AddInstrumentDialog> {
   late final TextEditingController _sectorController;
   Timer? _searchDebounce;
   var _searchEpoch = 0;
-  var _market = 'KOSPI';
+  late String _market;
   String? _validationError;
   String? _searchError;
   bool _searching = false;
@@ -703,6 +854,7 @@ class _AddInstrumentDialogState extends ConsumerState<_AddInstrumentDialog> {
     _symbolController = TextEditingController();
     _nameController = TextEditingController();
     _sectorController = TextEditingController();
+    _market = _defaultMarketForAssetClass(widget.assetClass);
     Future.microtask(() => _runSearch(''));
   }
 
@@ -730,9 +882,11 @@ class _AddInstrumentDialogState extends ConsumerState<_AddInstrumentDialog> {
       _searchError = null;
     });
     try {
-      final results = await ref
-          .read(tradingRepositoryProvider)
-          .searchDomesticStocks(query, limit: 60);
+      final results = widget.assetClass.usesDomesticKisApi
+          ? await ref
+              .read(tradingRepositoryProvider)
+              .searchDomesticStocks(query, limit: 60)
+          : _localCatalogResults(query);
       if (!mounted || epoch != _searchEpoch) return;
       setState(() {
         _searchResults = results;
@@ -744,7 +898,7 @@ class _AddInstrumentDialogState extends ConsumerState<_AddInstrumentDialog> {
       setState(() {
         _searchResults = fallback;
         _searching = false;
-        _searchError = 'KOSPI/KOSDAQ 전체 검색을 불러오지 못했습니다.';
+        _searchError = '${widget.assetClass.label} 종목 검색을 불러오지 못했습니다.';
       });
     }
   }
@@ -752,8 +906,12 @@ class _AddInstrumentDialogState extends ConsumerState<_AddInstrumentDialog> {
   List<DomesticStockSearchResult> _localCatalogResults(String query) {
     final normalizedQuery = query.trim().toLowerCase();
     final items = normalizedQuery.isEmpty
-        ? _popularStockCatalogItems
-        : _stockCatalog.where((item) => item.matches(normalizedQuery)).toList();
+        ? _popularCatalogItems(widget.assetClass)
+        : _stockCatalog
+            .where((item) =>
+                item.assetClass == widget.assetClass &&
+                item.matches(normalizedQuery))
+            .toList();
     return [
       for (final item in items.take(8))
         DomesticStockSearchResult(
@@ -789,11 +947,12 @@ class _AddInstrumentDialogState extends ConsumerState<_AddInstrumentDialog> {
   }
 
   void _submit() {
-    final searchSymbol = _normalizeStockSymbol(_searchController.text);
+    final searchSymbol =
+        _normalizeAssetSymbol(_searchController.text, widget.assetClass);
     final exactSearchMatch = _searchResults.where(
       (item) => item.symbol == searchSymbol,
     );
-    if (_symbolController.text.trim().isEmpty && searchSymbol.length == 6) {
+    if (_symbolController.text.trim().isEmpty && searchSymbol.isNotEmpty) {
       _symbolController.text = searchSymbol;
       if (exactSearchMatch.isNotEmpty) {
         final item = exactSearchMatch.first;
@@ -803,20 +962,28 @@ class _AddInstrumentDialogState extends ConsumerState<_AddInstrumentDialog> {
       }
     }
 
-    final symbol = _normalizeStockSymbol(_symbolController.text);
-    if (symbol.length != 6) {
-      setState(() => _validationError = '국내주식 종목코드 6자리를 입력해 주세요.');
+    final symbol =
+        _normalizeAssetSymbol(_symbolController.text, widget.assetClass);
+    if (symbol.isEmpty) {
+      setState(
+        () => _validationError = '${widget.assetClass.label} 종목 코드를 입력해 주세요.',
+      );
       return;
     }
-    if (widget.existingSymbols.contains(symbol)) {
+    final assetKey = _assetKey(widget.assetClass, _market, symbol);
+    if (widget.existingAssetKeys.contains(assetKey)) {
       setState(() => _validationError = '이미 관심종목에 추가된 종목입니다.');
       return;
     }
 
     final searchItem = _selectedItem?.symbol == symbol ? _selectedItem : null;
-    final catalogItem = _stockCatalogItemBySymbol(symbol);
+    final catalogItem = _stockCatalogItemBySymbol(
+      symbol,
+      assetClass: widget.assetClass,
+    );
     Navigator.of(context).pop(
       _InstrumentDraft(
+        assetClass: widget.assetClass,
         market: _market,
         symbol: symbol,
         name: _nameController.text.trim().isNotEmpty
@@ -865,7 +1032,7 @@ class _AddInstrumentDialogState extends ConsumerState<_AddInstrumentDialog> {
                         ),
                         const SizedBox(height: 3),
                         Text(
-                          'KOSPI/KOSDAQ 전체에서 종목명 또는 코드로 선택',
+                          '${widget.assetClass.label} 종목명 또는 코드로 선택',
                           style: TextStyle(
                             color: MetaServerColors.ink.withValues(alpha: 0.58),
                             fontWeight: FontWeight.w700,
@@ -902,7 +1069,7 @@ class _AddInstrumentDialogState extends ConsumerState<_AddInstrumentDialog> {
                           icon: const Icon(Icons.close_rounded),
                         ),
                   labelText: '종목 검색',
-                  hintText: '예: 하이닉스, 삼성전자, 005930',
+                  hintText: _searchHint(widget.assetClass),
                 ),
                 onChanged: (value) {
                   setState(() {
@@ -924,7 +1091,8 @@ class _AddInstrumentDialogState extends ConsumerState<_AddInstrumentDialog> {
                 spacing: 8,
                 runSpacing: 8,
                 children: [
-                  for (final item in _popularStockCatalogItems.take(6))
+                  for (final item
+                      in _popularCatalogItems(widget.assetClass).take(6))
                     ActionChip(
                       avatar: const Icon(Icons.trending_up_rounded, size: 17),
                       label: Text(item.name),
@@ -938,14 +1106,16 @@ class _AddInstrumentDialogState extends ConsumerState<_AddInstrumentDialog> {
                   builder: (context, constraints) {
                     final narrow = constraints.maxWidth < 680;
                     final results = _SearchResultsPanel(
+                      assetClass: widget.assetClass,
                       items: _searchResults,
                       selectedSymbol: _selectedItem?.symbol,
-                      existingSymbols: widget.existingSymbols,
+                      existingAssetKeys: widget.existingAssetKeys,
                       searching: _searching,
                       errorMessage: _searchError,
                       onSelected: _selectItem,
                     );
                     final form = _ManualInstrumentForm(
+                      assetClass: widget.assetClass,
                       market: _market,
                       symbolController: _symbolController,
                       nameController: _nameController,
@@ -1017,17 +1187,19 @@ class _AddInstrumentDialogState extends ConsumerState<_AddInstrumentDialog> {
 
 class _SearchResultsPanel extends StatelessWidget {
   const _SearchResultsPanel({
+    required this.assetClass,
     required this.items,
     required this.selectedSymbol,
-    required this.existingSymbols,
+    required this.existingAssetKeys,
     required this.searching,
     required this.errorMessage,
     required this.onSelected,
   });
 
+  final _AssetClass assetClass;
   final List<DomesticStockSearchResult> items;
   final String? selectedSymbol;
-  final Set<String> existingSymbols;
+  final Set<String> existingAssetKeys;
   final bool searching;
   final String? errorMessage;
   final ValueChanged<DomesticStockSearchResult> onSelected;
@@ -1057,7 +1229,7 @@ class _SearchResultsPanel extends StatelessWidget {
               ],
               Text(
                 searching
-                    ? 'KOSPI/KOSDAQ 전체 종목 검색 중입니다.'
+                    ? '${assetClass.label} 종목 검색 중입니다.'
                     : (errorMessage ?? '검색 결과가 없습니다. 직접 종목코드로 추가하세요.'),
                 textAlign: TextAlign.center,
                 style: TextStyle(
@@ -1080,9 +1252,12 @@ class _SearchResultsPanel extends StatelessWidget {
           itemBuilder: (context, index) {
             final item = items[index];
             return _StockSearchTile(
+              assetClass: assetClass,
               item: item,
               selected: item.symbol == selectedSymbol,
-              alreadyAdded: existingSymbols.contains(item.symbol),
+              alreadyAdded: existingAssetKeys.contains(
+                _assetKey(assetClass, item.market, item.symbol),
+              ),
               onTap: () => onSelected(item),
             );
           },
@@ -1119,12 +1294,14 @@ class _SearchResultsPanel extends StatelessWidget {
 
 class _StockSearchTile extends StatelessWidget {
   const _StockSearchTile({
+    required this.assetClass,
     required this.item,
     required this.selected,
     required this.alreadyAdded,
     required this.onTap,
   });
 
+  final _AssetClass assetClass;
   final DomesticStockSearchResult item;
   final bool selected;
   final bool alreadyAdded;
@@ -1159,7 +1336,9 @@ class _StockSearchTile extends StatelessWidget {
             overflow: TextOverflow.ellipsis,
             style: const TextStyle(fontWeight: FontWeight.w900),
           ),
-          subtitle: Text('${item.market} · ${item.symbol} · ${item.sector}'),
+          subtitle: Text(
+            '${assetClass.label} · ${item.market} · ${item.symbol} · ${item.sector}',
+          ),
           trailing: alreadyAdded
               ? const Text('추가됨', style: TextStyle(fontWeight: FontWeight.w900))
               : const Icon(Icons.add_circle_outline_rounded),
@@ -1171,6 +1350,7 @@ class _StockSearchTile extends StatelessWidget {
 
 class _ManualInstrumentForm extends StatelessWidget {
   const _ManualInstrumentForm({
+    required this.assetClass,
     required this.market,
     required this.symbolController,
     required this.nameController,
@@ -1180,6 +1360,7 @@ class _ManualInstrumentForm extends StatelessWidget {
     required this.onChanged,
   });
 
+  final _AssetClass assetClass;
   final String market;
   final TextEditingController symbolController;
   final TextEditingController nameController;
@@ -1210,10 +1391,13 @@ class _ManualInstrumentForm extends StatelessWidget {
           const SizedBox(height: 12),
           TextField(
             controller: symbolController,
-            keyboardType: TextInputType.number,
-            decoration: const InputDecoration(
+            keyboardType: assetClass == _AssetClass.domesticStock
+                ? TextInputType.number
+                : TextInputType.text,
+            textCapitalization: TextCapitalization.characters,
+            decoration: InputDecoration(
               labelText: '종목코드',
-              hintText: '005930',
+              hintText: _symbolHint(assetClass),
             ),
             onChanged: (_) => onChanged(),
           ),
@@ -1230,11 +1414,9 @@ class _ManualInstrumentForm extends StatelessWidget {
           DropdownButtonFormField<String>(
             initialValue: market,
             decoration: const InputDecoration(labelText: '시장'),
-            items: const [
-              DropdownMenuItem(value: 'KOSPI', child: Text('KOSPI')),
-              DropdownMenuItem(value: 'KOSDAQ', child: Text('KOSDAQ')),
-              DropdownMenuItem(value: 'ETF', child: Text('ETF')),
-              DropdownMenuItem(value: 'ETN', child: Text('ETN')),
+            items: [
+              for (final market in _marketsForAssetClass(assetClass))
+                DropdownMenuItem(value: market, child: Text(market)),
             ],
             onChanged: onMarketChanged,
           ),
@@ -1337,6 +1519,8 @@ class _TradingHomeTab extends ConsumerWidget {
 
 class _MarketTab extends StatelessWidget {
   const _MarketTab({
+    required this.selectedAssetClass,
+    required this.onAssetClassChanged,
     required this.groups,
     required this.selectedGroupId,
     required this.instruments,
@@ -1350,6 +1534,8 @@ class _MarketTab extends StatelessWidget {
     required this.onRemoveInstrument,
   });
 
+  final _AssetClass selectedAssetClass;
+  final ValueChanged<_AssetClass> onAssetClassChanged;
   final List<_WatchlistGroup> groups;
   final String selectedGroupId;
   final List<_Instrument> instruments;
@@ -1368,6 +1554,8 @@ class _MarketTab extends StatelessWidget {
       child: LayoutBuilder(
         builder: (context, constraints) {
           final list = _WatchlistPanel(
+            selectedAssetClass: selectedAssetClass,
+            onAssetClassChanged: onAssetClassChanged,
             groups: groups,
             selectedGroupId: selectedGroupId,
             instruments: instruments,
@@ -1443,7 +1631,7 @@ class _OrderTicketTabState extends ConsumerState<_OrderTicketTab> {
       _orderPriceText(oldWidget.instrument),
     );
     final currentPriceText = removeNumberGrouping(_priceController.text);
-    if (oldWidget.instrument.symbol != widget.instrument.symbol) {
+    if (oldWidget.instrument.assetKey != widget.instrument.assetKey) {
       _setPriceText(nextPriceText);
     } else if (nextPriceText.isNotEmpty &&
         (currentPriceText.isEmpty ||
@@ -1753,6 +1941,9 @@ class _OrderTicketTabState extends ConsumerState<_OrderTicketTab> {
     required bool referencePriceReady,
   }) {
     if (quantity <= 0) return '수량을 1주 이상 입력해 주세요.';
+    if (!widget.instrument.assetClass.usesDomesticKisApi) {
+      return '${widget.instrument.assetClass.label} 주문 어댑터는 준비 중입니다.';
+    }
     if (_marketOrder) {
       return livePrice ? null : '시장가 주문은 현재가 조회 후 전송할 수 있습니다.';
     }
@@ -2311,6 +2502,8 @@ class _RiskAndMarketPanel extends StatelessWidget {
 
 class _WatchlistPanel extends StatelessWidget {
   const _WatchlistPanel({
+    required this.selectedAssetClass,
+    required this.onAssetClassChanged,
     required this.groups,
     required this.selectedGroupId,
     required this.instruments,
@@ -2324,6 +2517,8 @@ class _WatchlistPanel extends StatelessWidget {
     required this.onRemoveInstrument,
   });
 
+  final _AssetClass selectedAssetClass;
+  final ValueChanged<_AssetClass> onAssetClassChanged;
   final List<_WatchlistGroup> groups;
   final String selectedGroupId;
   final List<_Instrument> instruments;
@@ -2364,6 +2559,11 @@ class _WatchlistPanel extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
+          _AssetClassSelector(
+            selected: selectedAssetClass,
+            onChanged: onAssetClassChanged,
+          ),
+          const SizedBox(height: 12),
           _WatchlistGroupBar(
             groups: groups,
             selectedGroupId: selectedGroupId,
@@ -2373,12 +2573,52 @@ class _WatchlistPanel extends StatelessWidget {
           for (final instrument in instruments)
             _InstrumentTile(
               instrument: instrument,
-              selected: instrument.symbol == selectedInstrument.symbol,
+              selected: instrument.assetKey == selectedInstrument.assetKey,
               onTap: () => onSelected(instrument),
               onOrder: onOrder,
               onRemove: () => onRemoveInstrument(instrument),
             ),
         ],
+      ),
+    );
+  }
+}
+
+class _AssetClassSelector extends StatelessWidget {
+  const _AssetClassSelector({
+    required this.selected,
+    required this.onChanged,
+  });
+
+  final _AssetClass selected;
+  final ValueChanged<_AssetClass> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return SegmentedButton<_AssetClass>(
+      segments: [
+        for (final assetClass in _AssetClass.values)
+          ButtonSegment(
+            value: assetClass,
+            icon: Icon(assetClass.icon),
+            label: Text(assetClass.label),
+          ),
+      ],
+      selected: {selected},
+      onSelectionChanged: (value) => onChanged(value.first),
+      style: ButtonStyle(
+        visualDensity: VisualDensity.compact,
+        backgroundColor: WidgetStateProperty.resolveWith((states) {
+          if (states.contains(WidgetState.selected)) {
+            return MetaServerColors.green.withValues(alpha: 0.14);
+          }
+          return Colors.white;
+        }),
+        foregroundColor: WidgetStateProperty.resolveWith((states) {
+          return states.contains(WidgetState.selected)
+              ? MetaServerColors.green
+              : MetaServerColors.ink;
+        }),
       ),
     );
   }
@@ -3602,6 +3842,7 @@ class _WatchlistGroup {
 
 class _Instrument {
   const _Instrument({
+    this.assetClass = _AssetClass.domesticStock,
     required this.market,
     required this.symbol,
     required this.name,
@@ -3616,6 +3857,7 @@ class _Instrument {
     this.hasLiveQuote = false,
   });
 
+  final _AssetClass assetClass;
   final String market;
   final String symbol;
   final String name;
@@ -3629,8 +3871,11 @@ class _Instrument {
   final List<double> chart;
   final bool hasLiveQuote;
 
+  String get assetKey => _assetKey(assetClass, market, symbol);
+
   static _Instrument? fromJson(Map<String, Object?> json) {
     final market = json['market'];
+    final assetClass = _assetClassFromStorage(json['assetClass']);
     final symbol = json['symbol'];
     final name = json['name'];
     final sector = json['sector'];
@@ -3655,6 +3900,7 @@ class _Instrument {
       return null;
     }
     return _Instrument(
+      assetClass: assetClass,
       market: market,
       symbol: symbol,
       name: name,
@@ -3673,6 +3919,7 @@ class _Instrument {
   Map<String, Object?> toJson() {
     return {
       'market': market,
+      'assetClass': assetClass.storageValue,
       'symbol': symbol,
       'name': name,
       'sector': sector,
@@ -3688,6 +3935,7 @@ class _Instrument {
   }
 
   _Instrument copyWith({
+    _AssetClass? assetClass,
     double? price,
     double? changeRate,
     double? open,
@@ -3701,6 +3949,7 @@ class _Instrument {
         ? chart
         : [if (chart.length > 1) ...chart.skip(1), nextPrice / 1000];
     return _Instrument(
+      assetClass: assetClass ?? this.assetClass,
       market: market,
       symbol: symbol,
       name: name,
@@ -3733,6 +3982,7 @@ List<double> _jsonDoubleList(Object? value) {
 
 class _StockCatalogItem {
   const _StockCatalogItem({
+    this.assetClass = _AssetClass.domesticStock,
     required this.market,
     required this.symbol,
     required this.name,
@@ -3740,6 +3990,7 @@ class _StockCatalogItem {
     this.aliases = const [],
   });
 
+  final _AssetClass assetClass;
   final String market;
   final String symbol;
   final String name;
@@ -3747,8 +3998,10 @@ class _StockCatalogItem {
   final List<String> aliases;
 
   bool matches(String query) {
-    final normalizedSymbol = _normalizeStockSymbol(query);
-    if (normalizedSymbol.isNotEmpty && symbol.contains(normalizedSymbol)) {
+    final normalizedSymbol =
+        _normalizeAssetSymbol(query, assetClass).toLowerCase();
+    if (normalizedSymbol.isNotEmpty &&
+        symbol.toLowerCase().contains(normalizedSymbol)) {
       return true;
     }
     final words = [name, symbol, market, sector, ...aliases];
@@ -3756,9 +4009,15 @@ class _StockCatalogItem {
   }
 }
 
-_StockCatalogItem? _stockCatalogItemBySymbol(String symbol) {
+_StockCatalogItem? _stockCatalogItemBySymbol(
+  String symbol, {
+  _AssetClass? assetClass,
+}) {
   for (final item in _stockCatalog) {
-    if (item.symbol == symbol) return item;
+    if (item.symbol == symbol &&
+        (assetClass == null || item.assetClass == assetClass)) {
+      return item;
+    }
   }
   return null;
 }
@@ -3772,11 +4031,28 @@ const _popularStockSymbols = [
   '035720',
 ];
 
-final _popularStockCatalogItems = [
-  for (final symbol in _popularStockSymbols)
-    if (_stockCatalogItemBySymbol(symbol) != null)
-      _stockCatalogItemBySymbol(symbol)!,
+const _popularOverseasSymbols = [
+  'AAPL',
+  'MSFT',
+  'NVDA',
+  'TSLA',
+  'GOOGL',
+  'AMZN'
 ];
+const _popularCryptoSymbols = ['BTC-KRW', 'ETH-KRW', 'SOL-KRW', 'XRP-KRW'];
+
+List<_StockCatalogItem> _popularCatalogItems(_AssetClass assetClass) {
+  final symbols = switch (assetClass) {
+    _AssetClass.domesticStock => _popularStockSymbols,
+    _AssetClass.overseasStock => _popularOverseasSymbols,
+    _AssetClass.crypto => _popularCryptoSymbols,
+  };
+  return [
+    for (final symbol in symbols)
+      if (_stockCatalogItemBySymbol(symbol, assetClass: assetClass) != null)
+        _stockCatalogItemBySymbol(symbol, assetClass: assetClass)!,
+  ];
+}
 
 const _stockCatalog = [
   _StockCatalogItem(
@@ -3916,6 +4192,70 @@ const _stockCatalog = [
     name: 'KODEX 200',
     sector: 'ETF',
   ),
+  _StockCatalogItem(
+    assetClass: _AssetClass.overseasStock,
+    market: 'NASDAQ',
+    symbol: 'AAPL',
+    name: 'Apple',
+    sector: 'Technology',
+    aliases: ['apple', 'iphone'],
+  ),
+  _StockCatalogItem(
+    assetClass: _AssetClass.overseasStock,
+    market: 'NASDAQ',
+    symbol: 'MSFT',
+    name: 'Microsoft',
+    sector: 'Technology',
+    aliases: ['microsoft'],
+  ),
+  _StockCatalogItem(
+    assetClass: _AssetClass.overseasStock,
+    market: 'NASDAQ',
+    symbol: 'NVDA',
+    name: 'NVIDIA',
+    sector: 'Semiconductor',
+    aliases: ['nvidia'],
+  ),
+  _StockCatalogItem(
+    assetClass: _AssetClass.overseasStock,
+    market: 'NASDAQ',
+    symbol: 'TSLA',
+    name: 'Tesla',
+    sector: 'Automotive',
+    aliases: ['tesla'],
+  ),
+  _StockCatalogItem(
+    assetClass: _AssetClass.crypto,
+    market: 'UPBIT',
+    symbol: 'BTC-KRW',
+    name: 'Bitcoin',
+    sector: 'Crypto',
+    aliases: ['btc', 'bitcoin'],
+  ),
+  _StockCatalogItem(
+    assetClass: _AssetClass.crypto,
+    market: 'UPBIT',
+    symbol: 'ETH-KRW',
+    name: 'Ethereum',
+    sector: 'Crypto',
+    aliases: ['eth', 'ethereum'],
+  ),
+  _StockCatalogItem(
+    assetClass: _AssetClass.crypto,
+    market: 'UPBIT',
+    symbol: 'SOL-KRW',
+    name: 'Solana',
+    sector: 'Crypto',
+    aliases: ['sol', 'solana'],
+  ),
+  _StockCatalogItem(
+    assetClass: _AssetClass.crypto,
+    market: 'UPBIT',
+    symbol: 'XRP-KRW',
+    name: 'XRP',
+    sector: 'Crypto',
+    aliases: ['xrp', 'ripple'],
+  ),
 ];
 
 const _defaultInstruments = [
@@ -3971,14 +4311,78 @@ const _defaultInstruments = [
     tradeAmount: 92400000000,
     chart: [212, 213.5, 213, 214.2, 214.8, 214.1, 214.5],
   ),
+  _Instrument(
+    assetClass: _AssetClass.overseasStock,
+    market: 'NASDAQ',
+    symbol: 'AAPL',
+    name: 'Apple',
+    sector: 'Technology',
+    price: 182.4,
+    changeRate: 0.64,
+    open: 181.2,
+    high: 183.1,
+    low: 180.8,
+    tradeAmount: 5240000000,
+    chart: [178, 179.5, 180.3, 181.1, 182.0, 181.7, 182.4],
+  ),
+  _Instrument(
+    assetClass: _AssetClass.overseasStock,
+    market: 'NASDAQ',
+    symbol: 'NVDA',
+    name: 'NVIDIA',
+    sector: 'Semiconductor',
+    price: 913.6,
+    changeRate: 1.92,
+    open: 898.0,
+    high: 918.3,
+    low: 892.4,
+    tradeAmount: 18300000000,
+    chart: [890, 895, 902, 908, 915, 910, 913.6],
+  ),
+  _Instrument(
+    assetClass: _AssetClass.crypto,
+    market: 'UPBIT',
+    symbol: 'BTC-KRW',
+    name: 'Bitcoin',
+    sector: 'Crypto',
+    price: 92840000,
+    changeRate: 0.84,
+    open: 92000000,
+    high: 93400000,
+    low: 91500000,
+    tradeAmount: 284000000000,
+    chart: [91500, 91820, 92100, 92500, 93000, 92750, 92840],
+  ),
+  _Instrument(
+    assetClass: _AssetClass.crypto,
+    market: 'UPBIT',
+    symbol: 'ETH-KRW',
+    name: 'Ethereum',
+    sector: 'Crypto',
+    price: 4380000,
+    changeRate: -0.32,
+    open: 4395000,
+    high: 4430000,
+    low: 4340000,
+    tradeAmount: 76000000000,
+    chart: [4400, 4390, 4410, 4385, 4370, 4388, 4380],
+  ),
 ];
+
+_Instrument _defaultInstrumentForAssetClass(_AssetClass assetClass) {
+  return _defaultInstruments.firstWhere(
+    (instrument) => instrument.assetClass == assetClass,
+    orElse: () => _defaultInstruments.first,
+  );
+}
 
 _Instrument _instrumentForHolding(
   List<_Instrument> instruments,
   KisHolding holding,
 ) {
   for (final instrument in instruments) {
-    if (instrument.symbol == holding.symbol) {
+    if (instrument.assetClass == _AssetClass.domesticStock &&
+        instrument.symbol == holding.symbol) {
       return instrument.copyWith(
         price: holding.currentPrice > 0 ? holding.currentPrice : null,
         changeRate: holding.profitLossRate,
@@ -3987,7 +4391,10 @@ _Instrument _instrumentForHolding(
     }
   }
 
-  final catalogItem = _stockCatalogItemBySymbol(holding.symbol);
+  final catalogItem = _stockCatalogItemBySymbol(
+    holding.symbol,
+    assetClass: _AssetClass.domesticStock,
+  );
   final price = holding.currentPrice > 0
       ? holding.currentPrice
       : holding.quantity > 0

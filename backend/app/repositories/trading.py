@@ -149,48 +149,79 @@ def upsert_instrument(conn: Connection, payload: InstrumentUpsert) -> dict[str, 
         cur.execute(
             """
             INSERT INTO instruments (
+                asset_class,
+                asset_code,
                 market,
+                market_code,
                 symbol,
                 isin,
                 name_ko,
                 name_en,
                 instrument_type,
                 currency,
+                quote_currency,
+                base_currency,
                 exchange_name,
                 is_tradable,
                 lot_size,
                 tick_size,
+                price_scale,
                 listed_at,
                 delisted_at,
                 raw_payload
             )
             VALUES (
+                %(asset_class)s,
+                COALESCE(
+                    %(asset_code)s,
+                    concat_ws(
+                        ':',
+                        CASE %(asset_class)s
+                            WHEN 'domestic_stock' THEN 'DOMESTIC'
+                            WHEN 'overseas_stock' THEN 'OVERSEAS'
+                            WHEN 'crypto' THEN 'CRYPTO'
+                            ELSE upper(%(asset_class)s)
+                        END,
+                        upper(%(market)s),
+                        upper(%(symbol)s)
+                    )
+                ),
                 %(market)s,
+                %(market_code)s,
                 %(symbol)s,
                 %(isin)s,
                 %(name_ko)s,
                 %(name_en)s,
                 %(instrument_type)s,
                 %(currency)s,
+                COALESCE(%(quote_currency)s, %(currency)s),
+                %(base_currency)s,
                 %(exchange_name)s,
                 %(is_tradable)s,
                 %(lot_size)s,
                 %(tick_size)s,
+                %(price_scale)s,
                 %(listed_at)s,
                 %(delisted_at)s,
                 %(raw_payload)s::jsonb
             )
             ON CONFLICT (market, symbol)
             DO UPDATE SET
+                asset_class = EXCLUDED.asset_class,
+                asset_code = EXCLUDED.asset_code,
+                market_code = EXCLUDED.market_code,
                 isin = EXCLUDED.isin,
                 name_ko = EXCLUDED.name_ko,
                 name_en = EXCLUDED.name_en,
                 instrument_type = EXCLUDED.instrument_type,
                 currency = EXCLUDED.currency,
+                quote_currency = EXCLUDED.quote_currency,
+                base_currency = EXCLUDED.base_currency,
                 exchange_name = EXCLUDED.exchange_name,
                 is_tradable = EXCLUDED.is_tradable,
                 lot_size = EXCLUDED.lot_size,
                 tick_size = EXCLUDED.tick_size,
+                price_scale = EXCLUDED.price_scale,
                 listed_at = EXCLUDED.listed_at,
                 delisted_at = EXCLUDED.delisted_at,
                 raw_payload = EXCLUDED.raw_payload,

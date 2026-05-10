@@ -275,6 +275,8 @@ class AutoStrategyDraft {
     required this.name,
     required this.description,
     required this.strategyType,
+    required this.assetClass,
+    required this.market,
     required this.symbol,
     required this.signalSide,
     required this.triggerChangeRate,
@@ -286,6 +288,8 @@ class AutoStrategyDraft {
   final String name;
   final String description;
   final String strategyType;
+  final String assetClass;
+  final String market;
   final String symbol;
   final String signalSide;
   final String triggerChangeRate;
@@ -294,7 +298,7 @@ class AutoStrategyDraft {
   final int cooldownSeconds;
 
   Map<String, dynamic> toJson() {
-    final normalizedSymbol = symbol.replaceAll(RegExp(r'[^0-9]'), '');
+    final normalizedSymbol = _normalizeStrategySymbol(symbol, assetClass);
     return {
       'name': name,
       'description': description,
@@ -307,7 +311,9 @@ class AutoStrategyDraft {
       'config': {
         'template': strategyType,
         'ui_created': true,
-        'symbol': normalizedSymbol.padLeft(6, '0'),
+        'asset_class': assetClass,
+        'market': market,
+        'symbol': normalizedSymbol,
         'signal_side': signalSide,
         'trigger_change_rate': triggerChangeRate,
         'order_kind': 'limit',
@@ -316,6 +322,20 @@ class AutoStrategyDraft {
       },
     };
   }
+}
+
+String _normalizeStrategySymbol(String symbol, String assetClass) {
+  final trimmed = symbol.trim().toUpperCase();
+  if (assetClass == 'domestic_stock') {
+    return trimmed.replaceAll(RegExp(r'[^0-9]'), '');
+  }
+  if (assetClass == 'crypto') {
+    return trimmed
+        .replaceAll('/', '-')
+        .replaceAll('_', '-')
+        .replaceAll(RegExp(r'[^A-Z0-9:-]'), '');
+  }
+  return trimmed.replaceAll(RegExp(r'[^A-Z0-9./-]'), '');
 }
 
 class AutoTradeSignal {

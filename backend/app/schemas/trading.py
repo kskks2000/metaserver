@@ -17,6 +17,12 @@ class BrokerEnvironment(str, Enum):
     live = "live"
 
 
+class AssetClass(str, Enum):
+    domestic_stock = "domestic_stock"
+    overseas_stock = "overseas_stock"
+    crypto = "crypto"
+
+
 class BrokerConnectionStatus(str, Enum):
     pending = "pending"
     active = "active"
@@ -143,17 +149,23 @@ class TradingAccountRecord(TradingAccountCreate):
 
 
 class InstrumentUpsert(BaseModel):
+    asset_class: AssetClass = AssetClass.domestic_stock
+    asset_code: str | None = Field(default=None, max_length=120)
     market: str = Field(max_length=20)
+    market_code: str | None = Field(default=None, max_length=40)
     symbol: str = Field(max_length=40)
     isin: str | None = Field(default=None, max_length=20)
     name_ko: str = Field(max_length=200)
     name_en: str | None = Field(default=None, max_length=200)
     instrument_type: InstrumentType = InstrumentType.stock
     currency: str = Field(default="KRW", max_length=10)
+    quote_currency: str | None = Field(default=None, max_length=10)
+    base_currency: str | None = Field(default=None, max_length=20)
     exchange_name: str | None = Field(default=None, max_length=100)
     is_tradable: bool = True
     lot_size: Decimal = Decimal("1")
     tick_size: Decimal | None = None
+    price_scale: Decimal = Decimal("1")
     listed_at: date | None = None
     delisted_at: date | None = None
     raw_payload: dict[str, Any] = Field(default_factory=dict)

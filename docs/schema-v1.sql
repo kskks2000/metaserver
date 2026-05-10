@@ -25,6 +25,7 @@ CREATE TYPE broker_environment AS ENUM ('paper', 'live');
 CREATE TYPE broker_connection_status AS ENUM ('pending', 'active', 'revoked', 'error');
 CREATE TYPE account_status AS ENUM ('active', 'disabled', 'revoked');
 CREATE TYPE instrument_type AS ENUM ('stock', 'etf', 'etn', 'reit', 'index', 'other');
+CREATE TYPE asset_class AS ENUM ('domestic_stock', 'overseas_stock', 'crypto');
 CREATE TYPE order_side AS ENUM ('buy', 'sell');
 CREATE TYPE order_kind AS ENUM ('market', 'limit', 'after_hours', 'reservation', 'other');
 CREATE TYPE order_status AS ENUM (
@@ -228,17 +229,23 @@ CREATE INDEX ix_trading_accounts_connection_id ON trading_accounts(broker_connec
 
 CREATE TABLE instruments (
     id uuid PRIMARY KEY DEFAULT ms_generate_uuid(),
+    asset_class asset_class NOT NULL DEFAULT 'domestic_stock',
+    asset_code text,
     market text NOT NULL,
+    market_code text,
     symbol text NOT NULL,
     isin text,
     name_ko text NOT NULL,
     name_en text,
     instrument_type instrument_type NOT NULL DEFAULT 'stock',
     currency text NOT NULL DEFAULT 'KRW',
+    quote_currency text,
+    base_currency text,
     exchange_name text,
     is_tradable boolean NOT NULL DEFAULT true,
     lot_size numeric(20, 6) NOT NULL DEFAULT 1,
     tick_size numeric(20, 6),
+    price_scale numeric(20, 8) NOT NULL DEFAULT 1,
     listed_at date,
     delisted_at date,
     raw_payload jsonb NOT NULL DEFAULT '{}'::jsonb,
@@ -249,6 +256,11 @@ CREATE TABLE instruments (
 
 CREATE INDEX ix_instruments_symbol ON instruments(symbol);
 CREATE INDEX ix_instruments_name_ko ON instruments(name_ko);
+CREATE UNIQUE INDEX ux_instruments_asset_code
+    ON instruments(asset_code)
+    WHERE asset_code IS NOT NULL;
+CREATE INDEX ix_instruments_asset_class_market
+    ON instruments(asset_class, market, symbol);
 
 CREATE TABLE watchlists (
     id uuid PRIMARY KEY DEFAULT ms_generate_uuid(),
