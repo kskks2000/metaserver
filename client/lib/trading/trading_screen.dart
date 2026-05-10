@@ -3149,23 +3149,18 @@ class _WatchlistGroupBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return SizedBox(
-      height: 42,
-      child: ListView.separated(
-        scrollDirection: Axis.horizontal,
-        itemCount: groups.length,
-        separatorBuilder: (context, index) => const SizedBox(width: 8),
-        itemBuilder: (context, index) {
-          final group = groups[index];
-          final selected = group.id == selectedGroupId;
-          return _WatchlistGroupChip(
+    return Wrap(
+      spacing: 8,
+      runSpacing: 8,
+      children: [
+        for (final group in groups)
+          _WatchlistGroupChip(
             group: group,
             selectedAssetClass: selectedAssetClass,
-            selected: selected,
+            selected: group.id == selectedGroupId,
             onTap: () => onSelected(group.id),
-          );
-        },
-      ),
+          ),
+      ],
     );
   }
 }
@@ -3191,52 +3186,59 @@ class _WatchlistGroupChip extends StatelessWidget {
     return Tooltip(
       message:
           '${group.name} ${selectedAssetClass.label} $visibleCount개 · 전체 $totalCount개',
-      child: Material(
-        color: Colors.transparent,
-        borderRadius: BorderRadius.circular(8),
-        child: InkWell(
-          onTap: onTap,
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 168, minHeight: 38),
+        child: Material(
+          color: Colors.transparent,
           borderRadius: BorderRadius.circular(8),
-          child: AnimatedContainer(
-            duration: const Duration(milliseconds: 160),
-            curve: Curves.easeOutCubic,
-            height: 38,
-            padding: const EdgeInsets.symmetric(horizontal: 12),
-            decoration: BoxDecoration(
-              color: selected ? MetaServerColors.green : Colors.white,
-              borderRadius: BorderRadius.circular(8),
-              border: Border.all(
-                color:
-                    selected ? MetaServerColors.green : MetaServerColors.line,
-              ),
-              boxShadow: selected
-                  ? [
-                      BoxShadow(
-                        color: MetaServerColors.green.withValues(alpha: 0.16),
-                        blurRadius: 12,
-                        offset: const Offset(0, 6),
-                      ),
-                    ]
-                  : null,
-            ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(
-                  selected ? Icons.folder_rounded : Icons.folder_outlined,
-                  size: 18,
+          child: InkWell(
+            onTap: onTap,
+            borderRadius: BorderRadius.circular(8),
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 160),
+              curve: Curves.easeOutCubic,
+              height: 38,
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              decoration: BoxDecoration(
+                color: selected ? MetaServerColors.green : Colors.white,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(
                   color:
-                      selected ? Colors.white : accent.withValues(alpha: 0.8),
+                      selected ? MetaServerColors.green : MetaServerColors.line,
                 ),
-                const SizedBox(width: 7),
-                Text(
-                  '${group.name} $visibleCount',
-                  style: TextStyle(
-                    color: selected ? Colors.white : MetaServerColors.ink,
-                    fontWeight: FontWeight.w900,
+                boxShadow: selected
+                    ? [
+                        BoxShadow(
+                          color: MetaServerColors.green.withValues(alpha: 0.16),
+                          blurRadius: 12,
+                          offset: const Offset(0, 6),
+                        ),
+                      ]
+                    : null,
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    selected ? Icons.folder_rounded : Icons.folder_outlined,
+                    size: 18,
+                    color:
+                        selected ? Colors.white : accent.withValues(alpha: 0.8),
                   ),
-                ),
-              ],
+                  const SizedBox(width: 7),
+                  Flexible(
+                    child: Text(
+                      '${group.name} $visibleCount',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: selected ? Colors.white : MetaServerColors.ink,
+                        fontWeight: FontWeight.w900,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
             ),
           ),
         ),
