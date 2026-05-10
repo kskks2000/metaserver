@@ -37,6 +37,14 @@ extension _AssetClassMeta on _AssetClass {
       };
 
   bool get usesDomesticKisApi => this == _AssetClass.domesticStock;
+
+  bool get supportsKisQuote =>
+      this == _AssetClass.domesticStock || this == _AssetClass.overseasStock;
+
+  bool get supportsKisOrder =>
+      this == _AssetClass.domesticStock || this == _AssetClass.overseasStock;
+
+  bool get usesDecimalPrice => this == _AssetClass.overseasStock;
 }
 
 _AssetClass _assetClassFromStorage(Object? value) {
@@ -244,7 +252,7 @@ class _TradingScreenState extends ConsumerState<TradingScreen> {
 
   Future<void> _refreshSelectedQuote({bool showMessage = true}) async {
     if (_quoteLoading) return;
-    if (!_selectedInstrument.assetClass.usesDomesticKisApi) {
+    if (!_selectedInstrument.assetClass.supportsKisQuote) {
       if (showMessage) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -258,9 +266,10 @@ class _TradingScreenState extends ConsumerState<TradingScreen> {
     }
     setState(() => _quoteLoading = true);
     try {
-      final quote = await ref
-          .read(tradingRepositoryProvider)
-          .loadQuote(_selectedInstrument.symbol);
+      final quote = await _loadQuoteForInstrument(
+        ref.read(tradingRepositoryProvider),
+        _selectedInstrument,
+      );
       if (!mounted) return;
       final updated = _mergeQuote(_selectedInstrument, quote);
       setState(() {
@@ -281,7 +290,7 @@ class _TradingScreenState extends ConsumerState<TradingScreen> {
       }
     } catch (error) {
       if (!mounted) return;
-      final message = !_selectedAssetClass.usesDomesticKisApi
+      final message = !_selectedAssetClass.supportsKisQuote
           ? '${_selectedAssetClass.label} 실시간 시세 어댑터는 준비 중입니다.'
           : isRecoverableApiFailure(error)
               ? 'KIS 조회에 실패했습니다. 백엔드 KIS 키와 계좌 설정을 확인해 주세요.'
@@ -302,7 +311,7 @@ class _TradingScreenState extends ConsumerState<TradingScreen> {
     var refreshedCount = 0;
     final refreshingGroupId = _selectedGroupId;
     final instrumentsSnapshot = List<_Instrument>.of(_visibleInstruments)
-        .where((instrument) => instrument.assetClass.usesDomesticKisApi)
+        .where((instrument) => instrument.assetClass.supportsKisQuote)
         .toList();
     final refreshedInstruments = List<_Instrument>.of(_instruments);
     var refreshedSelectedInstrument = _selectedInstrument;
@@ -316,7 +325,7 @@ class _TradingScreenState extends ConsumerState<TradingScreen> {
       for (var index = 0; index < instrumentsSnapshot.length; index++) {
         final instrument = instrumentsSnapshot[index];
         try {
-          final quote = await repository.loadQuote(instrument.symbol);
+          final quote = await _loadQuoteForInstrument(repository, instrument);
           if (!mounted) return;
           final updated = _mergeQuote(instrument, quote);
           refreshedCount += 1;
@@ -360,7 +369,7 @@ class _TradingScreenState extends ConsumerState<TradingScreen> {
       }
     } catch (error) {
       if (!mounted) return;
-      final message = !_selectedAssetClass.usesDomesticKisApi
+      final message = !_selectedAssetClass.supportsKisQuote
           ? '${_selectedAssetClass.label} 실시간 시세 어댑터는 준비 중입니다.'
           : isRecoverableApiFailure(error)
               ? 'KIS 조회에 실패했습니다. API 도메인과 계정 설정을 확인해 주세요.'
@@ -389,9 +398,11 @@ class _TradingScreenState extends ConsumerState<TradingScreen> {
     setState(() => _quoteLoading = true);
     DomesticStockQuote? quote;
     try {
-      if (draft.assetClass.usesDomesticKisApi) {
-        quote =
-            await ref.read(tradingRepositoryProvider).loadQuote(draft.symbol);
+      if (draft.assetClass.supportsKisQuote) {
+        quote = await _loadQuoteForDraft(
+          ref.read(tradingRepositoryProvider),
+          draft,
+        );
       }
     } catch (_) {
       quote = null;
@@ -681,6 +692,34 @@ class _TradingScreenState extends ConsumerState<TradingScreen> {
       ),
     );
   }
+}
+
+Future<DomesticStockQuote> _loadQuoteForInstrument(
+  TradingRepository repository,
+  _Instrument instrument,
+) {
+  return switch (instrument.assetClass) {
+    _AssetClass.domesticStock => repository.loadQuote(instrument.symbol),
+    _AssetClass.overseasStock => repository.loadOverseasQuote(
+        instrument.symbol,
+        marketCode: instrument.market,
+      ),
+    _AssetClass.crypto => throw StateError('No quote adapter for crypto.'),
+  };
+}
+
+Future<DomesticStockQuote> _loadQuoteForDraft(
+  TradingRepository repository,
+  _InstrumentDraft draft,
+) {
+  return switch (draft.assetClass) {
+    _AssetClass.domesticStock => repository.loadQuote(draft.symbol),
+    _AssetClass.overseasStock => repository.loadOverseasQuote(
+        draft.symbol,
+        marketCode: draft.market,
+      ),
+    _AssetClass.crypto => throw StateError('No quote adapter for crypto.'),
+  };
 }
 
 _Instrument _mergeQuote(_Instrument instrument, DomesticStockQuote quote) {
@@ -1660,8 +1699,13 @@ class _OrderTicketTabState extends ConsumerState<_OrderTicketTab> {
     final livePrice = _hasLiveQuote(widget.instrument);
     final price = _marketOrder
         ? (livePrice ? widget.instrument.price : 0.0)
-        : double.tryParse(removeNumberGrouping(_priceController.text)) ?? 0;
+        : _parseOrderPrice(_priceController.text);
     final estimated = quantity * price;
+    final isDomestic =
+        widget.instrument.assetClass == _AssetClass.domesticStock;
+    final isOverseas =
+        widget.instrument.assetClass == _AssetClass.overseasStock;
+    final orderCurrency = _priceCurrencySuffix(widget.instrument);
     final validationMessage = _orderValidationMessage(
       quantity: quantity,
       price: price,
@@ -1726,8 +1770,10 @@ class _OrderTicketTabState extends ConsumerState<_OrderTicketTab> {
                   label: '계좌',
                   child: _SelectLikeBox(
                     icon: Icons.account_balance_wallet_outlined,
-                    title: 'KIS 실전투자 계좌',
-                    subtitle: '주문가능 ${_won(4382000)}',
+                    title: isOverseas ? 'KIS 해외주식 계좌' : 'KIS 실전투자 계좌',
+                    subtitle: isOverseas
+                        ? '미국 주식 지정가 주문 · $orderCurrency 기준'
+                        : '주문가능 ${_won(4382000)}',
                   ),
                 ),
                 const SizedBox(height: 12),
@@ -1751,7 +1797,9 @@ class _OrderTicketTabState extends ConsumerState<_OrderTicketTab> {
                       child: _NumberField(
                         label: '가격',
                         controller: _priceController,
-                        suffix: '원',
+                        suffix: orderCurrency,
+                        allowDecimal:
+                            widget.instrument.assetClass.usesDecimalPrice,
                         enabled: !_marketOrder,
                         onChanged: (_) => setState(() {}),
                       ),
@@ -1761,9 +1809,14 @@ class _OrderTicketTabState extends ConsumerState<_OrderTicketTab> {
                 const SizedBox(height: 12),
                 _EstimateBox(
                   rows: [
-                    _Metric('예상 주문금액', _won(estimated)),
-                    _Metric('수수료/세금', _won(estimated * 0.0015)),
-                    _Metric('주문 후 예수금', _won(4382000 - estimated)),
+                    _Metric(
+                        '예상 주문금액', _assetMoney(widget.instrument, estimated)),
+                    _Metric('예상 수수료/세금',
+                        _assetMoney(widget.instrument, estimated * 0.0015)),
+                    _Metric(
+                      isDomestic ? '주문 후 예수금' : '주문 통화',
+                      isDomestic ? _won(4382000 - estimated) : orderCurrency,
+                    ),
                   ],
                 ),
                 if (validationMessage != null) ...[
@@ -1852,7 +1905,10 @@ class _OrderTicketTabState extends ConsumerState<_OrderTicketTab> {
                 value: '${widget.instrument.name} ${widget.instrument.symbol}',
               ),
               _ReviewRow(label: '구분', value: sideText),
-              _ReviewRow(label: '주문금액', value: _won(estimated)),
+              _ReviewRow(
+                label: '주문금액',
+                value: _assetMoney(widget.instrument, estimated),
+              ),
               const SizedBox(height: 14),
               FilledButton.icon(
                 onPressed: () {
@@ -1872,9 +1928,8 @@ class _OrderTicketTabState extends ConsumerState<_OrderTicketTab> {
   Future<void> _submitOrder() async {
     final quantity =
         int.tryParse(removeNumberGrouping(_quantityController.text)) ?? 0;
-    final limitPrice = _marketOrder
-        ? null
-        : int.tryParse(removeNumberGrouping(_priceController.text));
+    final limitPrice =
+        _marketOrder ? null : _parseOrderPrice(_priceController.text);
     final orderPrice =
         _marketOrder ? widget.instrument.price : (limitPrice ?? 0).toDouble();
     final validationMessage = _orderValidationMessage(
@@ -1891,15 +1946,29 @@ class _OrderTicketTabState extends ConsumerState<_OrderTicketTab> {
     }
     setState(() => _submitting = true);
     try {
-      final result = await ref.read(tradingRepositoryProvider).placeOrder(
+      final repository = ref.read(tradingRepositoryProvider);
+      final result = switch (widget.instrument.assetClass) {
+        _AssetClass.domesticStock => await repository.placeOrder(
             DomesticStockOrderDraft(
               side: _side == _TradeSide.buy ? 'buy' : 'sell',
               symbol: widget.instrument.symbol,
               quantity: quantity,
               orderKind: _marketOrder ? 'market' : 'limit',
+              price: limitPrice?.round(),
+            ),
+          ),
+        _AssetClass.overseasStock => await repository.placeOverseasOrder(
+            OverseasStockOrderDraft(
+              side: _side == _TradeSide.buy ? 'buy' : 'sell',
+              marketCode: widget.instrument.market,
+              symbol: widget.instrument.symbol,
+              quantity: quantity,
+              orderKind: 'limit',
               price: limitPrice,
             ),
-          );
+          ),
+        _AssetClass.crypto => throw StateError('코인 주문 어댑터는 준비 중입니다.'),
+      };
       if (!mounted) return;
       final orderNo = result.brokerOrderNo ?? result.trId;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -1922,9 +1991,11 @@ class _OrderTicketTabState extends ConsumerState<_OrderTicketTab> {
   }
 
   String _orderPriceText(_Instrument instrument) {
-    return _hasDisplayQuote(instrument)
-        ? formatIntegerInputText(instrument.price.toStringAsFixed(0))
-        : '';
+    if (!_hasDisplayQuote(instrument)) return '';
+    if (instrument.assetClass.usesDecimalPrice) {
+      return formatDecimalInputText(instrument.price.toStringAsFixed(2));
+    }
+    return formatIntegerInputText(instrument.price.toStringAsFixed(0));
   }
 
   void _setPriceText(String value) {
@@ -1941,10 +2012,13 @@ class _OrderTicketTabState extends ConsumerState<_OrderTicketTab> {
     required bool referencePriceReady,
   }) {
     if (quantity <= 0) return '수량을 1주 이상 입력해 주세요.';
-    if (!widget.instrument.assetClass.usesDomesticKisApi) {
+    if (!widget.instrument.assetClass.supportsKisOrder) {
       return '${widget.instrument.assetClass.label} 주문 어댑터는 준비 중입니다.';
     }
     if (_marketOrder) {
+      if (widget.instrument.assetClass == _AssetClass.overseasStock) {
+        return '미국 주식은 현재 지정가 주문만 지원합니다.';
+      }
       return livePrice ? null : '시장가 주문은 현재가 조회 후 전송할 수 있습니다.';
     }
     if (price <= 0) return '지정가를 입력해 주세요.';
@@ -1954,9 +2028,13 @@ class _OrderTicketTabState extends ConsumerState<_OrderTicketTab> {
     final lowerLimit = referencePrice * 0.7;
     final upperLimit = referencePrice * 1.3;
     if (price < lowerLimit || price > upperLimit) {
-      return '지정가가 현재가 기준 허용 범위를 벗어났습니다. 현재가 ${_won(referencePrice)} 근처 가격으로 다시 확인해 주세요.';
+      return '지정가가 현재가 기준 허용 범위를 벗어났습니다. 현재가 ${_assetMoney(widget.instrument, referencePrice)} 근처 가격으로 다시 확인해 주세요.';
     }
     return null;
+  }
+
+  double _parseOrderPrice(String value) {
+    return double.tryParse(removeNumberGrouping(value)) ?? 0;
   }
 }
 
@@ -3908,6 +3986,7 @@ class _NumberField extends StatelessWidget {
     required this.suffix,
     required this.onChanged,
     this.enabled = true,
+    this.allowDecimal = false,
   });
 
   final String label;
@@ -3915,6 +3994,7 @@ class _NumberField extends StatelessWidget {
   final String suffix;
   final ValueChanged<String> onChanged;
   final bool enabled;
+  final bool allowDecimal;
 
   @override
   Widget build(BuildContext context) {
@@ -3922,8 +4002,10 @@ class _NumberField extends StatelessWidget {
       controller: controller,
       enabled: enabled,
       onChanged: onChanged,
-      keyboardType: const TextInputType.numberWithOptions(decimal: false),
-      inputFormatters: const [ThousandsSeparatorInputFormatter()],
+      keyboardType: TextInputType.numberWithOptions(decimal: allowDecimal),
+      inputFormatters: allowDecimal
+          ? const [DecimalThousandsSeparatorInputFormatter()]
+          : const [ThousandsSeparatorInputFormatter()],
       decoration: InputDecoration(labelText: label, suffixText: suffix),
       textAlign: TextAlign.right,
       style: const TextStyle(fontWeight: FontWeight.w900),
@@ -4526,6 +4608,38 @@ const _stockCatalog = [
     aliases: ['tesla'],
   ),
   _StockCatalogItem(
+    assetClass: _AssetClass.overseasStock,
+    market: 'NASDAQ',
+    symbol: 'GOOGL',
+    name: 'Alphabet',
+    sector: 'Communication Services',
+    aliases: ['google', 'alphabet'],
+  ),
+  _StockCatalogItem(
+    assetClass: _AssetClass.overseasStock,
+    market: 'NASDAQ',
+    symbol: 'AMZN',
+    name: 'Amazon',
+    sector: 'Consumer Discretionary',
+    aliases: ['amazon'],
+  ),
+  _StockCatalogItem(
+    assetClass: _AssetClass.overseasStock,
+    market: 'NASDAQ',
+    symbol: 'META',
+    name: 'Meta Platforms',
+    sector: 'Communication Services',
+    aliases: ['meta', 'facebook'],
+  ),
+  _StockCatalogItem(
+    assetClass: _AssetClass.overseasStock,
+    market: 'NYSE',
+    symbol: 'BRK.B',
+    name: 'Berkshire Hathaway',
+    sector: 'Financials',
+    aliases: ['berkshire', 'brk'],
+  ),
+  _StockCatalogItem(
     assetClass: _AssetClass.crypto,
     market: 'UPBIT',
     symbol: 'BTC-KRW',
@@ -4762,12 +4876,40 @@ bool _hasLiveQuote(_Instrument instrument) {
   return instrument.hasLiveQuote && instrument.price > 0;
 }
 
+String _priceCurrencySuffix(_Instrument instrument) {
+  return switch (instrument.assetClass) {
+    _AssetClass.overseasStock => 'USD',
+    _AssetClass.crypto => instrument.symbol.endsWith('-USDT') ? 'USDT' : '원',
+    _AssetClass.domesticStock => '원',
+  };
+}
+
+String _assetMoney(_Instrument instrument, num value) {
+  if (instrument.assetClass == _AssetClass.overseasStock) {
+    return '\$${_groupedDecimal(value, decimalPlaces: 2)}';
+  }
+  return _won(value);
+}
+
+String _groupedDecimal(num value, {int decimalPlaces = 2}) {
+  final negative = value < 0;
+  final fixed = value.abs().toStringAsFixed(decimalPlaces);
+  final parts = fixed.split('.');
+  final whole = int.tryParse(parts.first) ?? 0;
+  final decimal = parts.length > 1 ? '.${parts[1]}' : '';
+  return '${negative ? '-' : ''}${_comma(whole)}$decimal';
+}
+
 String _priceLabel(_Instrument instrument) {
-  return _hasDisplayQuote(instrument) ? _won(instrument.price) : '조회 대기';
+  return _hasDisplayQuote(instrument)
+      ? _assetMoney(instrument, instrument.price)
+      : '조회 대기';
 }
 
 String _quoteMetric(_Instrument instrument, num value) {
-  return _hasDisplayQuote(instrument) && value > 0 ? _won(value) : '--';
+  return _hasDisplayQuote(instrument) && value > 0
+      ? _assetMoney(instrument, value)
+      : '--';
 }
 
 String _comma(num value) {

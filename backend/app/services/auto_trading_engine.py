@@ -19,6 +19,7 @@ from app.schemas.trading import (
     InstrumentUpsert,
     OrderKind,
     OrderSide,
+    OverseasStockOrderRequest,
 )
 from app.services.krx_directory import krx_stock_directory
 from app.services.kis import (
@@ -126,7 +127,7 @@ def _evaluate_strategy(
             f"국내주식 종목코드는 6자리 숫자여야 합니다: {symbol}",
         )
         return None
-    if asset_class != "domestic_stock":
+    if asset_class not in {"domestic_stock", "overseas_stock"}:
         _event(
             conn,
             user_id,
@@ -137,17 +138,63 @@ def _evaluate_strategy(
         )
         return None
 
-    directory_item = _directory_item(symbol)
-    name = directory_item.name if directory_item is not None else symbol
     market = str(config.get("market") or "").strip().upper()
-    if not market:
-        market = directory_item.market if directory_item is not None else "KOSPI"
-
     environment = BrokerEnvironment(str(strategy.get("environment") or "paper"))
     client = get_kis_client()
+    directory_item = (
+        _directory_item(symbol) if asset_class == "domestic_stock" else None
+    )
+
     try:
-        quote = client.quote_domestic_stock(symbol=symbol, environment=environment)
-    except (KisConfigurationError, KisApiError) as exc:
+        if asset_class == "overseas_stock":
+            if not market:
+                market = "NASDAQ"
+            quote = client.quote_overseas_stock(
+                symbol=symbol,
+                market_code=market,
+                environment=environment,
+            )
+            name = str(config.get("name") or symbol)
+            instrument_payload = InstrumentUpsert(
+                asset_class="overseas_stock",
+                asset_code=f"OVERSEAS:{market}:{symbol}",
+                market=market,
+                market_code=quote.order_market_code,
+                symbol=symbol,
+                name_ko=name,
+                instrument_type=InstrumentType.stock,
+                currency=quote.quote_currency,
+                exchange_name=market,
+                quote_currency=quote.quote_currency,
+                price_scale=Decimal("0.01"),
+                raw_payload={
+                    "source": "auto_trading_engine",
+                    "quote": quote.model_dump(mode="json"),
+                },
+            )
+        else:
+            name = directory_item.name if directory_item is not None else symbol
+            if not market:
+                market = (
+                    directory_item.market if directory_item is not None else "KOSPI"
+                )
+            quote = client.quote_domestic_stock(symbol=symbol, environment=environment)
+            instrument_payload = InstrumentUpsert(
+                asset_class="domestic_stock",
+                asset_code=f"DOMESTIC:{market}:{symbol}",
+                market=market,
+                market_code="KRX",
+                symbol=symbol,
+                isin=directory_item.standard_code if directory_item is not None else None,
+                name_ko=name,
+                instrument_type=InstrumentType.stock,
+                exchange_name=market,
+                raw_payload={
+                    "source": "auto_trading_engine",
+                    "quote": quote.model_dump(mode="json"),
+                },
+            )
+    except (KisConfigurationError, KisOrderValidationError, KisApiError) as exc:
         _event(
             conn,
             user_id,
@@ -163,32 +210,25 @@ def _evaluate_strategy(
         return None
 
     price = quote.price or Decimal("0")
-    instrument = trading.upsert_instrument(
-        conn,
-        InstrumentUpsert(
-            asset_class="domestic_stock",
-            asset_code=f"DOMESTIC:{market}:{symbol}",
-            market=market,
-            market_code="KRX",
-            symbol=symbol,
-            isin=directory_item.standard_code if directory_item is not None else None,
-            name_ko=name,
-            instrument_type=InstrumentType.stock,
-            exchange_name=market,
-            raw_payload={
-                "source": "auto_trading_engine",
-                "quote": quote.model_dump(mode="json"),
-            },
-        ),
-    )
+    instrument = trading.upsert_instrument(conn, instrument_payload)
 
     portfolio = None
-    try:
-        portfolio = client.portfolio(environment=environment)
-    except (KisConfigurationError, KisApiError):
-        portfolio = None
+    if asset_class == "domestic_stock":
+        try:
+            portfolio = client.portfolio(environment=environment)
+        except (KisConfigurationError, KisApiError):
+            portfolio = None
 
-    sizing = _sizing(control, strategy, price, decision["side"], portfolio, symbol)
+    sizing = _sizing(
+        control,
+        strategy,
+        price,
+        decision["side"],
+        portfolio,
+        symbol,
+        price_scale=Decimal("0.01") if asset_class == "overseas_stock" else Decimal("1"),
+        allow_market=asset_class == "domestic_stock",
+    )
     checks = _risk_checks(
         conn=conn,
         user_id=user_id,
@@ -270,6 +310,8 @@ def _evaluate_strategy(
             signal,
             symbol,
             name,
+            asset_class,
+            market,
             decision["side"],
             environment,
             sizing,
@@ -343,6 +385,9 @@ def _sizing(
     side: OrderSide,
     portfolio: Any,
     symbol: str,
+    *,
+    price_scale: Decimal = Decimal("1"),
+    allow_market: bool = True,
 ) -> dict[str, Any]:
     limit = _order_limit(control, strategy)
     limit = limit or Decimal("0")
@@ -359,6 +404,8 @@ def _sizing(
     order_kind = str(_as_dict(strategy.get("config")).get("order_kind") or "limit")
     if order_kind not in {"market", "limit"}:
         order_kind = "limit"
+    if not allow_market and order_kind == "market":
+        order_kind = "limit"
     limit_offset = _as_decimal(
         _as_dict(strategy.get("config")).get("limit_offset_rate"),
         Decimal("0"),
@@ -366,7 +413,7 @@ def _sizing(
     order_price = Decimal("0") if order_kind == "market" else price
     if order_kind == "limit" and limit_offset != 0:
         multiplier = Decimal("1") + (limit_offset / Decimal("100"))
-        order_price = (price * multiplier).quantize(Decimal("1"))
+        order_price = (price * multiplier).quantize(price_scale)
 
     expected_amount = Decimal(quantity) * (price if order_kind == "market" else order_price)
     return {
@@ -475,6 +522,8 @@ def _submit_order(
     signal: dict[str, Any],
     symbol: str,
     name: str,
+    asset_class: str,
+    market: str,
     side: OrderSide,
     environment: BrokerEnvironment,
     sizing: dict[str, Any],
@@ -483,6 +532,8 @@ def _submit_order(
         "environment": environment.value,
         "symbol": symbol,
         "name": name,
+        "asset_class": asset_class,
+        "market": market,
         "side": side.value,
         "quantity": sizing["quantity"],
         "order_kind": sizing["order_kind"],
@@ -500,17 +551,31 @@ def _submit_order(
         request_payload=request_payload,
     )
     try:
-        response = get_kis_client().place_domestic_stock_order(
-            DomesticStockOrderRequest(
-                environment=environment,
-                side=side,
-                symbol=symbol,
-                quantity=sizing["quantity"],
-                order_kind=OrderKind(sizing["order_kind"]),
-                price=None if sizing["order_kind"] == "market" else sizing["price"],
-                client_order_id=f"auto-{signal['id']}",
+        if asset_class == "overseas_stock":
+            response = get_kis_client().place_overseas_stock_order(
+                OverseasStockOrderRequest(
+                    environment=environment,
+                    side=side,
+                    market_code=market,
+                    symbol=symbol,
+                    quantity=sizing["quantity"],
+                    order_kind=OrderKind.limit,
+                    price=sizing["price"],
+                    client_order_id=f"auto-{signal['id']}",
+                )
             )
-        )
+        else:
+            response = get_kis_client().place_domestic_stock_order(
+                DomesticStockOrderRequest(
+                    environment=environment,
+                    side=side,
+                    symbol=symbol,
+                    quantity=sizing["quantity"],
+                    order_kind=OrderKind(sizing["order_kind"]),
+                    price=None if sizing["order_kind"] == "market" else sizing["price"],
+                    client_order_id=f"auto-{signal['id']}",
+                )
+            )
         updated = auto_trading.update_action_result(
             conn,
             str(action["id"]),

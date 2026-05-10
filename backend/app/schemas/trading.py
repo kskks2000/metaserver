@@ -350,6 +350,25 @@ class DomesticStockQuoteResponse(BaseModel):
     raw_output: dict[str, Any] = Field(default_factory=dict)
 
 
+class OverseasStockQuoteResponse(BaseModel):
+    environment: BrokerEnvironment
+    market_code: str
+    quote_market_code: str
+    order_market_code: str
+    symbol: str
+    quote_currency: str = "USD"
+    price: Decimal | None = None
+    previous_close: Decimal | None = None
+    change_price: Decimal | None = None
+    change_rate: Decimal | None = None
+    open_price: Decimal | None = None
+    high_price: Decimal | None = None
+    low_price: Decimal | None = None
+    accumulated_volume: Decimal | None = None
+    accumulated_trade_amount: Decimal | None = None
+    raw_output: dict[str, Any] = Field(default_factory=dict)
+
+
 class DomesticStockSearchItem(BaseModel):
     market: str
     symbol: str
@@ -385,6 +404,28 @@ class DomesticStockOrderRequest(BaseModel):
         return self
 
 
+class OverseasStockOrderRequest(BaseModel):
+    environment: BrokerEnvironment | None = None
+    side: OrderSide
+    market_code: str = Field(default="NASDAQ", min_length=2, max_length=10)
+    symbol: str = Field(min_length=1, max_length=20)
+    quantity: int = Field(gt=0)
+    order_kind: OrderKind = OrderKind.limit
+    price: Decimal | None = Field(default=None, ge=0)
+    order_division_code: str | None = Field(default=None, max_length=4)
+    client_order_id: str | None = Field(default=None, max_length=120)
+    dry_run: bool = False
+
+    @model_validator(mode="after")
+    def validate_price_for_supported_orders(self):
+        if self.order_division_code is None and self.order_kind != OrderKind.limit:
+            raise ValueError("US stock orders currently require limit order pricing.")
+        if self.order_kind == OrderKind.limit and self.order_division_code is None:
+            if self.price is None or self.price <= 0:
+                raise ValueError("Limit orders require a positive price.")
+        return self
+
+
 class DomesticStockOrderResponse(BaseModel):
     environment: BrokerEnvironment
     side: OrderSide
@@ -393,6 +434,27 @@ class DomesticStockOrderResponse(BaseModel):
     order_kind: OrderKind
     order_division_code: str
     price: Decimal
+    tr_id: str
+    dry_run: bool = False
+    broker_order_no: str | None = None
+    broker_order_time: str | None = None
+    kis_message_code: str | None = None
+    kis_message: str | None = None
+    request_payload: dict[str, Any] = Field(default_factory=dict)
+    raw_output: dict[str, Any] = Field(default_factory=dict)
+
+
+class OverseasStockOrderResponse(BaseModel):
+    environment: BrokerEnvironment
+    side: OrderSide
+    market_code: str
+    order_market_code: str
+    symbol: str
+    quantity: int
+    order_kind: OrderKind
+    order_division_code: str
+    price: Decimal
+    quote_currency: str = "USD"
     tr_id: str
     dry_run: bool = False
     broker_order_no: str | None = None

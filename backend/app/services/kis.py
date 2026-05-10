@@ -23,6 +23,9 @@ from app.schemas.trading import (
     KisPortfolioResponse,
     OrderKind,
     OrderSide,
+    OverseasStockOrderRequest,
+    OverseasStockOrderResponse,
+    OverseasStockQuoteResponse,
 )
 
 
@@ -66,11 +69,21 @@ class KisToken:
     expires_at: datetime
 
 
+@dataclass(frozen=True)
+class KisOverseasMarket:
+    market_code: str
+    quote_code: str
+    order_code: str
+    currency: str = "USD"
+
+
 class KisClient:
     TOKEN_PATH = "/oauth2/tokenP"
     HASHKEY_PATH = "/uapi/hashkey"
     QUOTE_PATH = "/uapi/domestic-stock/v1/quotations/inquire-price"
+    OVERSEAS_QUOTE_PATH = "/uapi/overseas-price/v1/quotations/price"
     ORDER_PATH = "/uapi/domestic-stock/v1/trading/order-cash"
+    OVERSEAS_ORDER_PATH = "/uapi/overseas-stock/v1/trading/order"
     BALANCE_PATH = "/uapi/domestic-stock/v1/trading/inquire-balance"
     ORDER_ACTIVITY_PATH = "/uapi/domestic-stock/v1/trading/inquire-daily-ccld"
     KST = ZoneInfo("Asia/Seoul")
@@ -139,6 +152,66 @@ class KisClient:
             low_price=self._decimal(output.get("stck_lwpr")),
             accumulated_volume=self._decimal(output.get("acml_vol")),
             accumulated_trade_amount=self._decimal(output.get("acml_tr_pbmn")),
+            raw_output=output,
+        )
+
+    def quote_overseas_stock(
+        self,
+        *,
+        symbol: str,
+        market_code: str = "NASDAQ",
+        environment: BrokerEnvironment | None = None,
+    ) -> OverseasStockQuoteResponse:
+        env = environment or BrokerEnvironment(self._settings.kis_default_environment)
+        credentials = self._credentials(env)
+        market = self._overseas_us_market(market_code)
+        normalized_symbol = symbol.strip().upper()
+        if not normalized_symbol:
+            raise KisOrderValidationError("US stock symbol is required.")
+
+        data = self._request(
+            credentials,
+            "GET",
+            self.OVERSEAS_QUOTE_PATH,
+            tr_id="HHDFS00000300",
+            params={
+                "AUTH": "",
+                "EXCD": market.quote_code,
+                "SYMB": normalized_symbol,
+            },
+        )
+        output = self._as_dict(data.get("output"))
+        return OverseasStockQuoteResponse(
+            environment=env,
+            market_code=market.market_code,
+            quote_market_code=market.quote_code,
+            order_market_code=market.order_code,
+            symbol=normalized_symbol,
+            quote_currency=market.currency,
+            price=self._decimal(output.get("last")),
+            previous_close=self._decimal(output.get("base")),
+            change_price=self._decimal(output.get("diff")),
+            change_rate=self._decimal(output.get("rate")),
+            open_price=self._decimal_first(
+                output,
+                "open",
+                "ovrs_stck_oprc",
+                "stck_oprc",
+            ),
+            high_price=self._decimal_first(
+                output,
+                "high",
+                "ovrs_stck_hgpr",
+                "stck_hgpr",
+            ),
+            low_price=self._decimal_first(
+                output,
+                "low",
+                "ovrs_stck_lwpr",
+                "stck_lwpr",
+            ),
+            accumulated_volume=self._decimal(output.get("tvol")),
+            accumulated_trade_amount=self._decimal(output.get("tamt")),
             raw_output=output,
         )
 
@@ -447,6 +520,76 @@ class KisClient:
             dry_run=False,
         )
 
+    def place_overseas_stock_order(
+        self,
+        payload: OverseasStockOrderRequest,
+    ) -> OverseasStockOrderResponse:
+        env = payload.environment or BrokerEnvironment(self._settings.kis_default_environment)
+        credentials = self._credentials(env)
+        if (
+            env == BrokerEnvironment.live
+            and not self._settings.kis_live_trading_enabled
+            and not payload.dry_run
+        ):
+            raise KisConfigurationError(
+                "Live KIS orders are disabled. Set KIS_LIVE_TRADING_ENABLED=true to allow them."
+            )
+
+        market = self._overseas_us_market(payload.market_code)
+        order_division = payload.order_division_code or self._overseas_order_division(
+            payload
+        )
+        if env == BrokerEnvironment.paper and order_division != "00":
+            raise KisOrderValidationError(
+                "KIS paper trading supports only US stock limit orders."
+            )
+
+        order_price = self._overseas_order_price(payload, order_division)
+        tr_id = self._overseas_order_tr_id(env, payload.side)
+        request_payload = self._overseas_order_payload(
+            credentials=credentials,
+            payload=payload,
+            market=market,
+            order_division=order_division,
+            order_price=order_price,
+        )
+
+        if payload.dry_run:
+            return self._overseas_order_response(
+                payload=payload,
+                env=env,
+                market=market,
+                tr_id=tr_id,
+                order_division=order_division,
+                order_price=order_price,
+                request_payload=request_payload,
+                data={"rt_cd": "0", "msg_cd": "DRY_RUN", "msg1": "Dry run only."},
+                raw_output={},
+                dry_run=True,
+            )
+
+        data = self._request(
+            credentials,
+            "POST",
+            self.OVERSEAS_ORDER_PATH,
+            tr_id=tr_id,
+            json_payload=request_payload,
+            include_hashkey=self._settings.kis_include_hashkey,
+        )
+        raw_output = self._as_dict(data.get("output"))
+        return self._overseas_order_response(
+            payload=payload,
+            env=env,
+            market=market,
+            tr_id=tr_id,
+            order_division=order_division,
+            order_price=order_price,
+            request_payload=request_payload,
+            data=data,
+            raw_output=raw_output,
+            dry_run=False,
+        )
+
     def _request(
         self,
         credentials: KisCredentials,
@@ -675,6 +818,31 @@ class KisClient:
             return "TTTC8001R"
         return "VTTC8001R"
 
+    @staticmethod
+    def _overseas_order_tr_id(environment: BrokerEnvironment, side: OrderSide) -> str:
+        prefix = "T" if environment == BrokerEnvironment.live else "V"
+        suffix = "1002U" if side == OrderSide.buy else "1006U"
+        return f"{prefix}TTT{suffix}"
+
+    @staticmethod
+    def _overseas_us_market(market_code: str) -> KisOverseasMarket:
+        normalized = market_code.strip().upper().replace("-", "").replace("_", "")
+        markets = {
+            "NASDAQ": KisOverseasMarket("NASDAQ", "NAS", "NASD"),
+            "NASD": KisOverseasMarket("NASDAQ", "NAS", "NASD"),
+            "NAS": KisOverseasMarket("NASDAQ", "NAS", "NASD"),
+            "NYSE": KisOverseasMarket("NYSE", "NYS", "NYSE"),
+            "NYS": KisOverseasMarket("NYSE", "NYS", "NYSE"),
+            "AMEX": KisOverseasMarket("AMEX", "AMS", "AMEX"),
+            "AMS": KisOverseasMarket("AMEX", "AMS", "AMEX"),
+        }
+        market = markets.get(normalized)
+        if market is None:
+            raise KisOrderValidationError(
+                "US stock market_code must be one of NASDAQ, NYSE, or AMEX."
+            )
+        return market
+
     def _activity_item(self, item: dict[str, Any]) -> KisOrderActivityItem:
         quantity = self._decimal(item.get("ord_qty")) or Decimal("0")
         filled_quantity = self._decimal(item.get("tot_ccld_qty")) or Decimal("0")
@@ -820,6 +988,49 @@ class KisClient:
         return data
 
     @staticmethod
+    def _overseas_order_division(payload: OverseasStockOrderRequest) -> str:
+        if payload.order_kind != OrderKind.limit:
+            raise KisOrderValidationError(
+                "US stock orders currently support limit orders only."
+            )
+        return "00"
+
+    @staticmethod
+    def _overseas_order_price(
+        payload: OverseasStockOrderRequest,
+        order_division: str,
+    ) -> Decimal:
+        if order_division in {"31", "33"}:
+            return Decimal("0")
+        price = payload.price or Decimal("0")
+        if price <= 0:
+            raise KisOrderValidationError("US stock limit orders require a price.")
+        return price
+
+    def _overseas_order_payload(
+        self,
+        *,
+        credentials: KisCredentials,
+        payload: OverseasStockOrderRequest,
+        market: KisOverseasMarket,
+        order_division: str,
+        order_price: Decimal,
+    ) -> dict[str, str]:
+        return {
+            "CANO": credentials.account_no,
+            "ACNT_PRDT_CD": credentials.product_code,
+            "OVRS_EXCG_CD": market.order_code,
+            "PDNO": payload.symbol.strip().upper(),
+            "ORD_DVSN": order_division,
+            "ORD_QTY": str(payload.quantity),
+            "OVRS_ORD_UNPR": self._decimal_as_api_price(order_price),
+            "CTAC_TLNO": "",
+            "MGCO_APTM_ODNO": "",
+            "SLL_TYPE": "00" if payload.side == OrderSide.sell else "",
+            "ORD_SVR_DVSN_CD": "0",
+        }
+
+    @staticmethod
     def _order_response(
         *,
         payload: DomesticStockOrderRequest,
@@ -840,6 +1051,41 @@ class KisClient:
             order_kind=payload.order_kind,
             order_division_code=order_division,
             price=order_price,
+            tr_id=tr_id,
+            dry_run=dry_run,
+            broker_order_no=raw_output.get("ODNO"),
+            broker_order_time=raw_output.get("ORD_TMD"),
+            kis_message_code=data.get("msg_cd"),
+            kis_message=data.get("msg1"),
+            request_payload=KisClient._sanitize_order_payload(request_payload),
+            raw_output=raw_output,
+        )
+
+    @staticmethod
+    def _overseas_order_response(
+        *,
+        payload: OverseasStockOrderRequest,
+        env: BrokerEnvironment,
+        market: KisOverseasMarket,
+        tr_id: str,
+        order_division: str,
+        order_price: Decimal,
+        request_payload: dict[str, Any],
+        data: dict[str, Any],
+        raw_output: dict[str, Any],
+        dry_run: bool,
+    ) -> OverseasStockOrderResponse:
+        return OverseasStockOrderResponse(
+            environment=env,
+            side=payload.side,
+            market_code=market.market_code,
+            order_market_code=market.order_code,
+            symbol=payload.symbol.strip().upper(),
+            quantity=payload.quantity,
+            order_kind=payload.order_kind,
+            order_division_code=order_division,
+            price=order_price,
+            quote_currency=market.currency,
             tr_id=tr_id,
             dry_run=dry_run,
             broker_order_no=raw_output.get("ODNO"),
@@ -894,6 +1140,15 @@ class KisClient:
         if value is None:
             return "0"
         return str(int(value))
+
+    @staticmethod
+    def _decimal_as_api_price(value: Decimal | None) -> str:
+        if value is None:
+            return "0"
+        if value == value.to_integral_value():
+            return str(int(value))
+        text = format(value.normalize(), "f")
+        return text.rstrip("0").rstrip(".") or "0"
 
     @staticmethod
     def _as_dict(value: Any) -> dict[str, Any]:

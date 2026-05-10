@@ -37,6 +37,16 @@ class TradingRepository {
     return DomesticStockQuote.fromJson(data);
   }
 
+  Future<DomesticStockQuote> loadOverseasQuote(
+    String symbol, {
+    String marketCode = 'NASDAQ',
+  }) async {
+    final data = await _apiClient.getJson(
+      '/trading/overseas-stocks/${Uri.encodeComponent(symbol)}/quote?market_code=${Uri.encodeQueryComponent(marketCode)}',
+    );
+    return DomesticStockQuote.fromJson(data);
+  }
+
   Future<List<DomesticStockSearchResult>> searchDomesticStocks(
     String query, {
     int limit = 50,
@@ -60,6 +70,16 @@ class TradingRepository {
   ) async {
     final data = await _apiClient.postJson(
       '/trading/domestic-stocks/orders',
+      data: draft.toJson(),
+    );
+    return DomesticStockOrderResult.fromJson(data);
+  }
+
+  Future<DomesticStockOrderResult> placeOverseasOrder(
+    OverseasStockOrderDraft draft,
+  ) async {
+    final data = await _apiClient.postJson(
+      '/trading/overseas-stocks/orders',
       data: draft.toJson(),
     );
     return DomesticStockOrderResult.fromJson(data);
@@ -304,6 +324,7 @@ class DomesticStockQuote {
     this.lowPrice,
     this.accumulatedVolume,
     this.accumulatedTradeAmount,
+    this.quoteCurrency,
   });
 
   final String symbol;
@@ -317,6 +338,7 @@ class DomesticStockQuote {
   final double? lowPrice;
   final double? accumulatedVolume;
   final double? accumulatedTradeAmount;
+  final String? quoteCurrency;
 
   factory DomesticStockQuote.fromJson(Map<String, dynamic> json) {
     return DomesticStockQuote(
@@ -331,6 +353,7 @@ class DomesticStockQuote {
       lowPrice: _asDouble(json['low_price']),
       accumulatedVolume: _asDouble(json['accumulated_volume']),
       accumulatedTradeAmount: _asDouble(json['accumulated_trade_amount']),
+      quoteCurrency: json['quote_currency']?.toString(),
     );
   }
 }
@@ -353,6 +376,35 @@ class DomesticStockOrderDraft {
   Map<String, dynamic> toJson() {
     return {
       'side': side,
+      'symbol': symbol,
+      'quantity': quantity,
+      'order_kind': orderKind,
+      if (price != null) 'price': price,
+    };
+  }
+}
+
+class OverseasStockOrderDraft {
+  const OverseasStockOrderDraft({
+    required this.side,
+    required this.marketCode,
+    required this.symbol,
+    required this.quantity,
+    required this.orderKind,
+    this.price,
+  });
+
+  final String side;
+  final String marketCode;
+  final String symbol;
+  final int quantity;
+  final String orderKind;
+  final num? price;
+
+  Map<String, dynamic> toJson() {
+    return {
+      'side': side,
+      'market_code': marketCode,
       'symbol': symbol,
       'quantity': quantity,
       'order_kind': orderKind,

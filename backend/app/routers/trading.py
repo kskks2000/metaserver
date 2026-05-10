@@ -18,6 +18,9 @@ from app.schemas.trading import (
     KisConnectionStatusResponse,
     KisOrderActivityResponse,
     KisPortfolioResponse,
+    OverseasStockOrderRequest,
+    OverseasStockOrderResponse,
+    OverseasStockQuoteResponse,
 )
 from app.services.krx_directory import krx_stock_directory
 from app.services.kis import (
@@ -113,6 +116,26 @@ def domestic_stock_quote(
         raise
 
 
+@router.get(
+    "/overseas-stocks/{symbol}/quote",
+    response_model=OverseasStockQuoteResponse,
+)
+def overseas_stock_quote(
+    symbol: str,
+    market_code: str = Query(default="NASDAQ", min_length=2, max_length=10),
+    environment: BrokerEnvironment | None = None,
+) -> OverseasStockQuoteResponse:
+    try:
+        return get_kis_client().quote_overseas_stock(
+            symbol=symbol.upper(),
+            market_code=market_code.upper(),
+            environment=environment,
+        )
+    except (KisConfigurationError, KisOrderValidationError, KisApiError) as exc:
+        _raise_kis_error(exc)
+        raise
+
+
 @router.get("/kis/portfolio", response_model=KisPortfolioResponse)
 def kis_portfolio(
     principal: FirebasePrincipal = Depends(get_current_principal),
@@ -162,6 +185,25 @@ def place_domestic_stock_order(
     payload.exchange_code = payload.exchange_code.upper()
     try:
         return get_kis_client().place_domestic_stock_order(payload)
+    except (KisConfigurationError, KisOrderValidationError, KisApiError) as exc:
+        _raise_kis_error(exc)
+        raise
+
+
+@router.post(
+    "/overseas-stocks/orders",
+    response_model=OverseasStockOrderResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def place_overseas_stock_order(
+    payload: OverseasStockOrderRequest,
+    principal: FirebasePrincipal = Depends(get_current_principal),
+) -> OverseasStockOrderResponse:
+    del principal
+    payload.symbol = payload.symbol.upper()
+    payload.market_code = payload.market_code.upper()
+    try:
+        return get_kis_client().place_overseas_stock_order(payload)
     except (KisConfigurationError, KisOrderValidationError, KisApiError) as exc:
         _raise_kis_error(exc)
         raise
