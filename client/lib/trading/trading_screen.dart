@@ -36,6 +36,12 @@ extension _AssetClassMeta on _AssetClass {
         _AssetClass.crypto => Icons.currency_bitcoin_rounded,
       };
 
+  Color get accent => switch (this) {
+        _AssetClass.domesticStock => MetaServerColors.green,
+        _AssetClass.overseasStock => MetaServerColors.cyan,
+        _AssetClass.crypto => MetaServerColors.amber,
+      };
+
   bool get usesDomesticKisApi => this == _AssetClass.domesticStock;
 }
 
@@ -2595,30 +2601,144 @@ class _AssetClassSelector extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return SegmentedButton<_AssetClass>(
-      segments: [
-        for (final assetClass in _AssetClass.values)
-          ButtonSegment(
-            value: assetClass,
-            icon: Icon(assetClass.icon),
-            label: Text(assetClass.label),
+    return Container(
+      height: 54,
+      padding: const EdgeInsets.all(4),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: MetaServerColors.line),
+        boxShadow: [
+          BoxShadow(
+            color: MetaServerColors.ink.withValues(alpha: 0.07),
+            blurRadius: 18,
+            offset: const Offset(0, 8),
           ),
-      ],
-      selected: {selected},
-      onSelectionChanged: (value) => onChanged(value.first),
-      style: ButtonStyle(
-        visualDensity: VisualDensity.compact,
-        backgroundColor: WidgetStateProperty.resolveWith((states) {
-          if (states.contains(WidgetState.selected)) {
-            return MetaServerColors.green.withValues(alpha: 0.14);
-          }
-          return Colors.white;
-        }),
-        foregroundColor: WidgetStateProperty.resolveWith((states) {
-          return states.contains(WidgetState.selected)
-              ? MetaServerColors.green
-              : MetaServerColors.ink;
-        }),
+        ],
+      ),
+      child: Row(
+        children: [
+          for (final assetClass in _AssetClass.values) ...[
+            Expanded(
+              child: _AssetClassTab(
+                assetClass: assetClass,
+                selected: selected == assetClass,
+                onTap: () => onChanged(assetClass),
+              ),
+            ),
+            if (assetClass != _AssetClass.values.last) const SizedBox(width: 4),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _AssetClassTab extends StatelessWidget {
+  const _AssetClassTab({
+    required this.assetClass,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final _AssetClass assetClass;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final accent = assetClass.accent;
+    final foreground = selected ? Colors.white : MetaServerColors.ink;
+    final iconBackground = selected
+        ? Colors.white.withValues(alpha: 0.18)
+        : accent.withValues(alpha: 0.1);
+    final iconColor = selected ? Colors.white : accent;
+
+    return Tooltip(
+      message: assetClass.label,
+      child: Material(
+        color: Colors.transparent,
+        borderRadius: BorderRadius.circular(6),
+        child: InkWell(
+          onTap: selected ? null : onTap,
+          borderRadius: BorderRadius.circular(6),
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 180),
+            curve: Curves.easeOutCubic,
+            height: double.infinity,
+            padding: const EdgeInsets.symmetric(horizontal: 8),
+            decoration: BoxDecoration(
+              color: selected ? MetaServerColors.ink : Colors.transparent,
+              borderRadius: BorderRadius.circular(6),
+              border: Border.all(
+                color: selected
+                    ? Colors.white.withValues(alpha: 0.10)
+                    : Colors.transparent,
+              ),
+              boxShadow: selected
+                  ? [
+                      BoxShadow(
+                        color: MetaServerColors.ink.withValues(alpha: 0.18),
+                        blurRadius: 14,
+                        offset: const Offset(0, 7),
+                      ),
+                    ]
+                  : null,
+            ),
+            child: Stack(
+              alignment: Alignment.center,
+              children: [
+                if (selected)
+                  Positioned(
+                    bottom: 5,
+                    left: 18,
+                    right: 18,
+                    child: Container(
+                      height: 2,
+                      decoration: BoxDecoration(
+                        color: accent,
+                        borderRadius: BorderRadius.circular(99),
+                      ),
+                    ),
+                  ),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    AnimatedContainer(
+                      duration: const Duration(milliseconds: 180),
+                      width: 26,
+                      height: 26,
+                      decoration: BoxDecoration(
+                        color: iconBackground,
+                        borderRadius: BorderRadius.circular(6),
+                        border: Border.all(
+                          color: selected
+                              ? Colors.white.withValues(alpha: 0.20)
+                              : accent.withValues(alpha: 0.18),
+                        ),
+                      ),
+                      child: Icon(assetClass.icon, size: 16, color: iconColor),
+                    ),
+                    const SizedBox(width: 7),
+                    Flexible(
+                      child: Text(
+                        assetClass.label,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          color: foreground,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w900,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
       ),
     );
   }
