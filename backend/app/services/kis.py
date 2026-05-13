@@ -77,6 +77,12 @@ class KisOverseasMarket:
     currency: str = "USD"
 
 
+@dataclass(frozen=True)
+class DomesticOrderRoute:
+    order_division: str
+    exchange_code: str
+
+
 class KisClient:
     TOKEN_PATH = "/oauth2/tokenP"
     HASHKEY_PATH = "/uapi/hashkey"
@@ -87,8 +93,21 @@ class KisClient:
     BALANCE_PATH = "/uapi/domestic-stock/v1/trading/inquire-balance"
     ORDER_ACTIVITY_PATH = "/uapi/domestic-stock/v1/trading/inquire-daily-ccld"
     KST = ZoneInfo("Asia/Seoul")
-    REGULAR_SESSION_START = time(9, 0)
-    REGULAR_SESSION_END = time(15, 30)
+    KRX_ORDER_START = time(8, 30)
+    KRX_REGULAR_START = time(9, 0)
+    KRX_REGULAR_END = time(15, 30)
+    KRX_PRE_CLOSE_START = time(8, 30)
+    KRX_PRE_CLOSE_END = time(8, 40)
+    KRX_AFTER_CLOSE_START = time(15, 30)
+    KRX_AFTER_CLOSE_END = time(16, 0)
+    KRX_AFTER_SINGLE_START = time(16, 0)
+    KRX_AFTER_SINGLE_END = time(18, 0)
+    NXT_PRE_START = time(8, 0)
+    NXT_PRE_END = time(8, 50)
+    NXT_MAIN_START = time(9, 0, 30)
+    NXT_MAIN_END = time(15, 20)
+    NXT_AFTER_ORDER_START = time(15, 30)
+    NXT_AFTER_END = time(20, 0)
 
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
@@ -474,15 +493,15 @@ class KisClient:
                 "Live KIS orders are disabled. Set KIS_LIVE_TRADING_ENABLED=true to allow them."
             )
 
-        order_division = payload.order_division_code or self._order_division(payload)
-        if not payload.dry_run:
-            self._validate_supported_order_session(payload, order_division)
+        route = self._resolve_domestic_order_route(payload)
+        order_division = route.order_division
         order_price = self._order_price(payload, order_division)
         tr_id = self._order_tr_id(env, payload.side)
         request_payload = self._order_payload(
             credentials=credentials,
             payload=payload,
             order_division=order_division,
+            exchange_code=route.exchange_code,
             order_price=order_price,
         )
 
@@ -929,35 +948,135 @@ class KisClient:
             return "01"
         return "00"
 
-    def _validate_supported_order_session(
+    def _resolve_domestic_order_route(
+        self, payload: DomesticStockOrderRequest
+    ) -> DomesticOrderRoute:
+        now = datetime.now(self.KST)
+        order_division = self._clean_string(payload.order_division_code)
+        if order_division is None:
+            order_division = self._order_division(payload)
+        exchange_code = self._normalize_domestic_exchange_code(payload.exchange_code)
+        if exchange_code == "AUTO":
+            exchange_code = self._auto_domestic_exchange_code(
+                payload=payload,
+                order_division=order_division,
+                now=now,
+            )
+        if not payload.dry_run:
+            self._validate_supported_order_session(
+                payload=payload,
+                order_division=order_division,
+                exchange_code=exchange_code,
+                now=now,
+            )
+        return DomesticOrderRoute(
+            order_division=order_division,
+            exchange_code=exchange_code,
+        )
+
+    def _auto_domestic_exchange_code(
         self,
+        *,
         payload: DomesticStockOrderRequest,
         order_division: str,
+        now: datetime,
+    ) -> str:
+        current = now.time()
+        if self._in_range(current, self.NXT_PRE_START, self.KRX_ORDER_START):
+            return "NXT"
+        if self._in_range(current, self.KRX_ORDER_START, self.KRX_REGULAR_END):
+            return "KRX"
+        if self._in_range(current, self.NXT_AFTER_ORDER_START, self.NXT_AFTER_END):
+            return "NXT"
+        return "KRX"
+
+    @staticmethod
+    def _normalize_domestic_exchange_code(value: str | None) -> str:
+        exchange_code = (value or "AUTO").strip().upper()
+        allowed = {"AUTO", "KRX", "NXT", "SOR", "ALL"}
+        if exchange_code not in allowed:
+            raise KisOrderValidationError(
+                "Domestic stock exchange_code must be one of AUTO, KRX, NXT, SOR, or ALL."
+            )
+        return exchange_code
+
+    def _validate_supported_order_session(
+        self,
+        *,
+        payload: DomesticStockOrderRequest,
+        order_division: str,
+        exchange_code: str,
+        now: datetime,
     ) -> None:
         if not self._settings.kis_regular_session_only:
             return
         if payload.order_kind not in {OrderKind.limit, OrderKind.market}:
             return
-        if order_division not in {"00", "01"}:
+
+        if now.weekday() >= 5:
+            self._raise_domestic_session_error(now)
+
+        current = now.time()
+
+        if exchange_code in {"SOR", "ALL"} and order_division in {"00", "01"}:
+            if self._in_range(current, self.NXT_PRE_START, self.NXT_AFTER_END):
+                return
+
+        if exchange_code == "NXT" and self._is_nxt_order_session(
+            current, order_division
+        ):
             return
 
-        now = datetime.now(self.KST)
-        in_weekday = now.weekday() < 5
-        in_regular_session = (
-            self.REGULAR_SESSION_START <= now.time() <= self.REGULAR_SESSION_END
+        if exchange_code == "KRX" and self._is_krx_order_session(
+            current, order_division
+        ):
+            return
+
+        self._raise_domestic_session_error(now)
+
+    def _is_krx_order_session(self, current: time, order_division: str) -> bool:
+        if order_division in {"00", "01"}:
+            return self._in_range(current, self.KRX_ORDER_START, self.KRX_REGULAR_END)
+        if order_division == "05":
+            return self._in_range(
+                current, self.KRX_PRE_CLOSE_START, self.KRX_PRE_CLOSE_END
+            )
+        if order_division == "06":
+            return self._in_range(
+                current, self.KRX_AFTER_CLOSE_START, self.KRX_AFTER_CLOSE_END
+            )
+        if order_division == "07":
+            return self._in_range(
+                current, self.KRX_AFTER_SINGLE_START, self.KRX_AFTER_SINGLE_END
+            )
+        return False
+
+    def _is_nxt_order_session(self, current: time, order_division: str) -> bool:
+        if order_division not in {"00", "01", "03", "04"}:
+            return False
+        return (
+            self._in_range(current, self.NXT_PRE_START, self.NXT_PRE_END)
+            or self._in_range(current, self.NXT_MAIN_START, self.NXT_MAIN_END)
+            or self._in_range(
+                current, self.NXT_AFTER_ORDER_START, self.NXT_AFTER_END
+            )
         )
-        if in_weekday and in_regular_session:
-            return
 
+    @staticmethod
+    def _in_range(current: time, start: time, end: time) -> bool:
+        return start <= current <= end
+
+    @staticmethod
+    def _raise_domestic_session_error(now: datetime) -> None:
         raise KisOrderValidationError(
-            "현재 MetaServer는 국내주식 정규장 주문만 지원합니다. "
-            "평일 09:00~15:30(KST)에 지정가/시장가 주문을 전송해 주세요. "
+            "현재 국내주식 주문 가능 시간이 아닙니다. "
+            "지정가는 평일 08:00~20:00(KST), 시장가는 평일 09:00~15:30(KST)에 전송할 수 있습니다. "
             f"현재 서버 기준 시간은 {now:%Y-%m-%d %H:%M:%S KST}입니다."
         )
 
     @staticmethod
     def _order_price(payload: DomesticStockOrderRequest, order_division: str) -> Decimal:
-        if order_division == "01":
+        if order_division in {"01", "05", "06"}:
             return Decimal("0")
         return payload.price or Decimal("0")
 
@@ -967,6 +1086,7 @@ class KisClient:
         credentials: KisCredentials,
         payload: DomesticStockOrderRequest,
         order_division: str,
+        exchange_code: str,
         order_price: Decimal,
     ) -> dict[str, str]:
         data = {
@@ -978,7 +1098,7 @@ class KisClient:
             "ORD_UNPR": self._decimal_as_api_int(order_price),
         }
         if self._settings.kis_order_protocol == "modern":
-            data["EXCG_ID_DVSN_CD"] = payload.exchange_code
+            data["EXCG_ID_DVSN_CD"] = exchange_code
             data["SLL_TYPE"] = payload.sell_type if payload.side == OrderSide.sell else ""
             data["CNDT_PRIC"] = (
                 self._decimal_as_api_int(payload.condition_price)

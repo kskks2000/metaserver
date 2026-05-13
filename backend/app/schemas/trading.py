@@ -401,7 +401,7 @@ class DomesticStockOrderRequest(BaseModel):
     order_kind: OrderKind = OrderKind.limit
     price: Decimal | None = Field(default=None, ge=0)
     order_division_code: str | None = Field(default=None, max_length=4)
-    exchange_code: str = Field(default="KRX", max_length=10)
+    exchange_code: str = Field(default="AUTO", max_length=10)
     sell_type: str = Field(default="01", max_length=4)
     condition_price: Decimal | None = Field(default=None, ge=0)
     client_order_id: str | None = Field(default=None, max_length=120)
@@ -409,7 +409,8 @@ class DomesticStockOrderRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_price_for_limit_order(self):
-        if self.order_kind == OrderKind.limit and self.order_division_code is None:
+        order_division = (self.order_division_code or "00").strip()
+        if self.order_kind == OrderKind.limit and order_division in {"00", "07"}:
             if self.price is None or self.price <= 0:
                 raise ValueError("Limit orders require a positive price.")
         return self

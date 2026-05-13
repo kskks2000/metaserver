@@ -401,6 +401,7 @@ class DomesticStockOrderDraft {
     required this.symbol,
     required this.quantity,
     required this.orderKind,
+    this.exchangeCode = 'AUTO',
     this.price,
   });
 
@@ -408,6 +409,7 @@ class DomesticStockOrderDraft {
   final String symbol;
   final int quantity;
   final String orderKind;
+  final String exchangeCode;
   final int? price;
 
   Map<String, dynamic> toJson() {
@@ -416,6 +418,7 @@ class DomesticStockOrderDraft {
       'symbol': symbol,
       'quantity': quantity,
       'order_kind': orderKind,
+      'exchange_code': exchangeCode,
       if (price != null) 'price': price,
     };
   }

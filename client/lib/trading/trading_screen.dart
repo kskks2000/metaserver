@@ -739,6 +739,8 @@ class _TradingScreenState extends ConsumerState<TradingScreen> {
       _OrderTicketTab(
         instrument: _selectedInstrument,
         initialSide: _tradeSide,
+        portfolioFuture: _portfolioFuture,
+        cachedPortfolio: _cachedPortfolio,
         onSideChanged: (side) => setState(() => _tradeSide = side),
       ),
       const _ActivityTab(),
@@ -1757,11 +1759,15 @@ class _OrderTicketTab extends ConsumerStatefulWidget {
   const _OrderTicketTab({
     required this.instrument,
     required this.initialSide,
+    required this.portfolioFuture,
+    required this.cachedPortfolio,
     required this.onSideChanged,
   });
 
   final _Instrument instrument;
   final _TradeSide initialSide;
+  final Future<KisPortfolio> portfolioFuture;
+  final KisPortfolio? cachedPortfolio;
   final ValueChanged<_TradeSide> onSideChanged;
 
   @override
@@ -1833,187 +1839,265 @@ class _OrderTicketTabState extends ConsumerState<_OrderTicketTab> {
     final isOverseas =
         widget.instrument.assetClass == _AssetClass.overseasStock;
     final orderCurrency = _priceCurrencySuffix(widget.instrument);
-    final validationMessage = _orderValidationMessage(
+    final orderValidationMessage = _orderValidationMessage(
       quantity: quantity,
       price: price,
       livePrice: livePrice,
       referencePriceReady: referencePriceReady,
     );
-    final canSubmit =
-        validationMessage == null && !_submitting && !_riskNoticeLoading;
     final sideColor = _side == _TradeSide.buy
         ? MetaServerColors.green
         : MetaServerColors.danger;
 
-    return _ScreenScroll(
-      child: LayoutBuilder(
-        builder: (context, constraints) {
-          final ticket = _Panel(
-            title: '주문 티켓',
-            icon: Icons.swap_vertical_circle_outlined,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                _SelectedInstrumentHeader(instrument: widget.instrument),
-                const SizedBox(height: 14),
-                SegmentedButton<_TradeSide>(
-                  segments: const [
-                    ButtonSegment(
-                      value: _TradeSide.buy,
-                      label: Text('매수'),
-                      icon: Icon(Icons.add_chart_rounded),
-                    ),
-                    ButtonSegment(
-                      value: _TradeSide.sell,
-                      label: Text('매도'),
-                      icon: Icon(Icons.show_chart_rounded),
-                    ),
-                  ],
-                  selected: {_side},
-                  onSelectionChanged: (value) {
-                    final side = value.first;
-                    setState(() => _side = side);
-                    widget.onSideChanged(side);
-                  },
-                  style: ButtonStyle(
-                    visualDensity: VisualDensity.compact,
-                    foregroundColor: WidgetStateProperty.resolveWith((states) {
-                      if (states.contains(WidgetState.selected)) {
-                        return Colors.white;
-                      }
-                      return MetaServerColors.ink;
-                    }),
-                    backgroundColor: WidgetStateProperty.resolveWith((states) {
-                      if (!states.contains(WidgetState.selected)) {
-                        return Colors.white;
-                      }
-                      return _side == _TradeSide.buy
-                          ? MetaServerColors.green
-                          : MetaServerColors.danger;
-                    }),
-                  ),
-                ),
-                const SizedBox(height: 14),
-                _FieldLabel(
-                  label: '계좌',
-                  child: _SelectLikeBox(
-                    icon: Icons.account_balance_wallet_outlined,
-                    title: isOverseas ? 'KIS 해외주식 계좌' : 'KIS 실전투자 계좌',
-                    subtitle: isOverseas
-                        ? '미국 주식 지정가 주문 · $orderCurrency 기준'
-                        : '주문가능 ${_won(4382000)}',
-                  ),
-                ),
-                const SizedBox(height: 12),
-                _OrderTypeSwitch(
-                  marketOrder: _marketOrder,
-                  onChanged: (value) => setState(() => _marketOrder = value),
-                ),
-                const SizedBox(height: 12),
-                Row(
+    return FutureBuilder<KisPortfolio>(
+      future: widget.portfolioFuture,
+      builder: (context, snapshot) {
+        final portfolio = snapshot.data ?? widget.cachedPortfolio;
+        final accountLoading =
+            snapshot.connectionState == ConnectionState.waiting &&
+                portfolio == null;
+        final accountErrorMessage = snapshot.hasError && portfolio == null
+            ? (apiFailureMessage(snapshot.error!) ?? 'KIS 잔고 조회에 실패했습니다.')
+            : null;
+        final accountReady = portfolio != null && accountErrorMessage == null;
+        final accountValidationMessage =
+            orderValidationMessage == null && !accountReady
+                ? (accountLoading
+                    ? 'KIS 계좌 잔고 조회 후 주문할 수 있습니다.'
+                    : accountErrorMessage ?? 'KIS 계좌 설정을 확인해 주세요.')
+                : null;
+        final validationMessage =
+            orderValidationMessage ?? accountValidationMessage;
+        final canSubmit =
+            validationMessage == null && !_submitting && !_riskNoticeLoading;
+        final orderableCash = portfolio?.orderableCash;
+        final afterOrderCash =
+            orderableCash == null ? null : orderableCash - estimated;
+
+        return _ScreenScroll(
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              final ticket = _Panel(
+                title: '주문 티켓',
+                icon: Icons.swap_vertical_circle_outlined,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    Expanded(
-                      child: _NumberField(
-                        label: '수량',
-                        controller: _quantityController,
-                        suffix: '주',
-                        onChanged: (_) => setState(() {}),
+                    _SelectedInstrumentHeader(instrument: widget.instrument),
+                    const SizedBox(height: 14),
+                    SegmentedButton<_TradeSide>(
+                      segments: const [
+                        ButtonSegment(
+                          value: _TradeSide.buy,
+                          label: Text('매수'),
+                          icon: Icon(Icons.add_chart_rounded),
+                        ),
+                        ButtonSegment(
+                          value: _TradeSide.sell,
+                          label: Text('매도'),
+                          icon: Icon(Icons.show_chart_rounded),
+                        ),
+                      ],
+                      selected: {_side},
+                      onSelectionChanged: (value) {
+                        final side = value.first;
+                        setState(() => _side = side);
+                        widget.onSideChanged(side);
+                      },
+                      style: ButtonStyle(
+                        visualDensity: VisualDensity.compact,
+                        foregroundColor:
+                            WidgetStateProperty.resolveWith((states) {
+                          if (states.contains(WidgetState.selected)) {
+                            return Colors.white;
+                          }
+                          return MetaServerColors.ink;
+                        }),
+                        backgroundColor:
+                            WidgetStateProperty.resolveWith((states) {
+                          if (!states.contains(WidgetState.selected)) {
+                            return Colors.white;
+                          }
+                          return _side == _TradeSide.buy
+                              ? MetaServerColors.green
+                              : MetaServerColors.danger;
+                        }),
                       ),
                     ),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: _NumberField(
-                        label: '가격',
-                        controller: _priceController,
-                        suffix: orderCurrency,
-                        allowDecimal:
-                            widget.instrument.assetClass.usesDecimalPrice,
-                        enabled: !_marketOrder,
-                        onChanged: (_) => setState(() {}),
+                    const SizedBox(height: 14),
+                    _FieldLabel(
+                      label: '계좌',
+                      child: _SelectLikeBox(
+                        icon: Icons.account_balance_wallet_outlined,
+                        title: _orderAccountTitle(
+                          portfolio: portfolio,
+                          loading: accountLoading,
+                          errorMessage: accountErrorMessage,
+                        ),
+                        subtitle: _orderAccountSubtitle(
+                          portfolio: portfolio,
+                          loading: accountLoading,
+                          errorMessage: accountErrorMessage,
+                          isOverseas: isOverseas,
+                          orderCurrency: orderCurrency,
+                        ),
                       ),
+                    ),
+                    const SizedBox(height: 12),
+                    _OrderTypeSwitch(
+                      marketOrder: _marketOrder,
+                      onChanged: (value) =>
+                          setState(() => _marketOrder = value),
+                    ),
+                    const SizedBox(height: 12),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: _NumberField(
+                            label: '수량',
+                            controller: _quantityController,
+                            suffix: '주',
+                            onChanged: (_) => setState(() {}),
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: _NumberField(
+                            label: '가격',
+                            controller: _priceController,
+                            suffix: orderCurrency,
+                            allowDecimal:
+                                widget.instrument.assetClass.usesDecimalPrice,
+                            enabled: !_marketOrder,
+                            onChanged: (_) => setState(() {}),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    _EstimateBox(
+                      rows: [
+                        _Metric('예상 주문금액',
+                            _assetMoney(widget.instrument, estimated)),
+                        _Metric('예상 수수료/세금',
+                            _assetMoney(widget.instrument, estimated * 0.0015)),
+                        _Metric(
+                          isDomestic ? '주문 후 예수금' : '주문 통화',
+                          isDomestic
+                              ? (afterOrderCash == null
+                                  ? '--'
+                                  : _won(afterOrderCash))
+                              : orderCurrency,
+                        ),
+                      ],
+                    ),
+                    if (validationMessage != null) ...[
+                      const SizedBox(height: 10),
+                      _OrderValidationNotice(message: validationMessage),
+                    ],
+                    const SizedBox(height: 14),
+                    ElevatedButton.icon(
+                      onPressed: canSubmit
+                          ? () => _showOrderReview(context, estimated)
+                          : null,
+                      icon: Icon(
+                        _side == _TradeSide.buy
+                            ? Icons.shopping_cart_checkout_rounded
+                            : Icons.sell_outlined,
+                      ),
+                      label: Text(
+                        _submitting
+                            ? '주문 전송 중'
+                            : (_side == _TradeSide.buy
+                                ? '매수 주문 확인'
+                                : '매도 주문 확인'),
+                      ),
+                      style:
+                          ElevatedButton.styleFrom(backgroundColor: sideColor),
                     ),
                   ],
                 ),
-                const SizedBox(height: 12),
-                _EstimateBox(
-                  rows: [
-                    _Metric(
-                        '예상 주문금액', _assetMoney(widget.instrument, estimated)),
-                    _Metric('예상 수수료/세금',
-                        _assetMoney(widget.instrument, estimated * 0.0015)),
-                    _Metric(
-                      isDomestic ? '주문 후 예수금' : '주문 통화',
-                      isDomestic ? _won(4382000 - estimated) : orderCurrency,
+              );
+
+              final guide = _Panel(
+                title: '주문 전 점검',
+                icon: Icons.verified_user_outlined,
+                child: Column(
+                  children: [
+                    _CheckRow(
+                      label: '실시간 시세 기준 가격 확인',
+                      checked: referencePriceReady,
                     ),
+                    _CheckRow(
+                      label: accountReady
+                          ? '계좌 연결 및 잔고 확인 완료'
+                          : accountLoading
+                              ? '계좌 연결 및 잔고 확인 중'
+                              : '계좌 연결 및 잔고 확인 필요',
+                      checked: accountReady,
+                    ),
+                    const _CheckRow(label: '일 주문 한도와 손실 한도 확인', checked: true),
+                    _CheckRow(
+                      label: _riskNoticeAgreed
+                          ? '실거래 전 투자위험 고지 동의 완료'
+                          : _riskNoticeLoading
+                              ? '실거래 전 투자위험 고지 동의 확인 중'
+                              : '실거래 전 투자위험 고지 동의 필요',
+                      checked: _riskNoticeAgreed,
+                    ),
+                    if (_riskNoticeError != null && !_riskNoticeAgreed) ...[
+                      const SizedBox(height: 10),
+                      _OrderValidationNotice(message: _riskNoticeError!),
+                    ],
                   ],
                 ),
-                if (validationMessage != null) ...[
-                  const SizedBox(height: 10),
-                  _OrderValidationNotice(message: validationMessage),
-                ],
-                const SizedBox(height: 14),
-                ElevatedButton.icon(
-                  onPressed: canSubmit
-                      ? () => _showOrderReview(context, estimated)
-                      : null,
-                  icon: Icon(
-                    _side == _TradeSide.buy
-                        ? Icons.shopping_cart_checkout_rounded
-                        : Icons.sell_outlined,
-                  ),
-                  label: Text(
-                    _submitting
-                        ? '주문 전송 중'
-                        : (_side == _TradeSide.buy ? '매수 주문 확인' : '매도 주문 확인'),
-                  ),
-                  style: ElevatedButton.styleFrom(backgroundColor: sideColor),
-                ),
-              ],
-            ),
-          );
+              );
 
-          final guide = _Panel(
-            title: '주문 전 점검',
-            icon: Icons.verified_user_outlined,
-            child: Column(
-              children: [
-                _CheckRow(
-                  label: '실시간 시세 기준 가격 확인',
-                  checked: referencePriceReady,
-                ),
-                const _CheckRow(label: '계좌 연결 및 토큰 유효성 확인', checked: true),
-                const _CheckRow(label: '일 주문 한도와 손실 한도 확인', checked: true),
-                _CheckRow(
-                  label: _riskNoticeAgreed
-                      ? '실거래 전 투자위험 고지 동의 완료'
-                      : _riskNoticeLoading
-                          ? '실거래 전 투자위험 고지 동의 확인 중'
-                          : '실거래 전 투자위험 고지 동의 필요',
-                  checked: _riskNoticeAgreed,
-                ),
-                if (_riskNoticeError != null && !_riskNoticeAgreed) ...[
-                  const SizedBox(height: 10),
-                  _OrderValidationNotice(message: _riskNoticeError!),
-                ],
-              ],
-            ),
-          );
+              if (constraints.maxWidth >= 900) {
+                return Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Expanded(flex: 6, child: ticket),
+                    const SizedBox(width: 16),
+                    Expanded(flex: 4, child: guide),
+                  ],
+                );
+              }
 
-          if (constraints.maxWidth >= 900) {
-            return Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Expanded(flex: 6, child: ticket),
-                const SizedBox(width: 16),
-                Expanded(flex: 4, child: guide),
-              ],
-            );
-          }
-
-          return Column(children: [ticket, const SizedBox(height: 16), guide]);
-        },
-      ),
+              return Column(
+                  children: [ticket, const SizedBox(height: 16), guide]);
+            },
+          ),
+        );
+      },
     );
+  }
+
+  String _orderAccountTitle({
+    required KisPortfolio? portfolio,
+    required bool loading,
+    required String? errorMessage,
+  }) {
+    if (loading) return 'KIS 계좌 확인 중';
+    if (errorMessage != null) return 'KIS 계좌 확인 필요';
+    final title = 'KIS ${_kisEnvironmentLabel(portfolio?.environment)} 계좌';
+    final accountLabel = portfolio?.accountNoMasked.trim() ?? '';
+    return accountLabel.isEmpty ? title : '$title $accountLabel';
+  }
+
+  String _orderAccountSubtitle({
+    required KisPortfolio? portfolio,
+    required bool loading,
+    required String? errorMessage,
+    required bool isOverseas,
+    required String orderCurrency,
+  }) {
+    if (loading) return '주문가능 금액 조회 중';
+    if (errorMessage != null) return 'KIS 잔고 조회 실패';
+    if (isOverseas) return '미국 주식 지정가 주문 · $orderCurrency 기준';
+    final orderableCash = portfolio?.orderableCash;
+    if (orderableCash == null) return '주문가능 금액 확인 필요';
+    return '주문가능 ${_won(orderableCash)}';
   }
 
   Future<void> _loadRiskNoticeConsent() async {
@@ -2251,6 +2335,11 @@ class _OrderTicketTabState extends ConsumerState<_OrderTicketTab> {
     if (quantity <= 0) return '수량을 1주 이상 입력해 주세요.';
     if (!widget.instrument.assetClass.supportsKisOrder) {
       return '${widget.instrument.assetClass.label} 주문 어댑터는 준비 중입니다.';
+    }
+    if (widget.instrument.assetClass == _AssetClass.domesticStock) {
+      if (!_isDomesticExtendedSessionNow()) {
+        return '국내주식 주문은 평일 08:00~20:00(KST)에 전송할 수 있습니다.';
+      }
     }
     if (_marketOrder) {
       if (widget.instrument.assetClass == _AssetClass.overseasStock) {
@@ -2595,9 +2684,9 @@ class _TradingAccountTab extends ConsumerWidget {
                       enabled: true,
                     ),
                     const _LimitRow(
-                      label: '시간외 주문',
-                      value: '꺼짐',
-                      enabled: false,
+                      label: '확장시간 주문',
+                      value: '켜짐',
+                      enabled: true,
                     ),
                   ],
                 ),
@@ -2630,6 +2719,11 @@ class _AccountSummaryPanel extends StatelessWidget {
     final accountLabel = portfolio?.accountNoMasked.isNotEmpty == true
         ? portfolio!.accountNoMasked
         : '';
+    final accountTitle = loading
+        ? 'KIS 계좌 조회 중'
+        : errorMessage != null
+            ? 'KIS 계좌 확인 필요'
+            : 'KIS ${_kisEnvironmentLabel(portfolio?.environment)} 계좌';
     final headline = loading
         ? '조회 중'
         : errorMessage != null
@@ -2661,8 +2755,8 @@ class _AccountSummaryPanel extends StatelessWidget {
                 children: [
                   Text(
                     accountLabel.isEmpty
-                        ? 'KIS 실전투자 계좌'
-                        : 'KIS 실전투자 계좌 $accountLabel',
+                        ? accountTitle
+                        : '$accountTitle $accountLabel',
                     style: TextStyle(
                       color: Colors.white.withValues(alpha: 0.72),
                       fontWeight: FontWeight.w700,
@@ -2678,7 +2772,11 @@ class _AccountSummaryPanel extends StatelessWidget {
                   ),
                 ],
               ),
-              const _EnvironmentBadge(),
+              _EnvironmentBadge(
+                environment: portfolio?.environment,
+                loading: loading,
+                errorMessage: errorMessage,
+              ),
             ],
           ),
           const SizedBox(height: 18),
@@ -2847,6 +2945,7 @@ class _RiskAndMarketPanel extends StatelessWidget {
             children: [
               _CheckRow(label: '실전투자 모드', checked: true),
               _CheckRow(label: '실전주문 허용', checked: true),
+              _CheckRow(label: '확장시간 자동 라우팅', checked: true),
               _CheckRow(label: '일 손실 한도 설정', checked: true),
             ],
           ),
@@ -3601,10 +3700,23 @@ class _IconBadge extends StatelessWidget {
 }
 
 class _EnvironmentBadge extends StatelessWidget {
-  const _EnvironmentBadge();
+  const _EnvironmentBadge({
+    required this.loading,
+    required this.errorMessage,
+    this.environment,
+  });
+
+  final String? environment;
+  final bool loading;
+  final String? errorMessage;
 
   @override
   Widget build(BuildContext context) {
+    final label = loading
+        ? '조회 중'
+        : errorMessage != null
+            ? '확인 필요'
+            : _kisEnvironmentLabel(environment);
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
       decoration: BoxDecoration(
@@ -3614,14 +3726,21 @@ class _EnvironmentBadge extends StatelessWidget {
           color: MetaServerColors.mint.withValues(alpha: 0.24),
         ),
       ),
-      child: const Row(
+      child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(Icons.science_outlined, size: 18, color: MetaServerColors.mint),
-          SizedBox(width: 7),
+          const Icon(
+            Icons.science_outlined,
+            size: 18,
+            color: MetaServerColors.mint,
+          ),
+          const SizedBox(width: 7),
           Text(
-            '실전투자',
-            style: TextStyle(color: Colors.white, fontWeight: FontWeight.w900),
+            label,
+            style: const TextStyle(
+              color: Colors.white,
+              fontWeight: FontWeight.w900,
+            ),
           ),
         ],
       ),
@@ -4445,7 +4564,7 @@ class _ConnectionStatus extends StatelessWidget {
     final text = loading
         ? 'KIS 계좌 연결 확인 중'
         : connected
-            ? 'KIS 실전투자 계좌 연결 완료'
+            ? 'KIS 계좌 연결 완료'
             : (message ?? 'KIS 계좌 연결 설정을 확인해 주세요');
     return Container(
       padding: const EdgeInsets.all(14),
@@ -5276,11 +5395,38 @@ bool _hasLiveQuote(_Instrument instrument) {
   return instrument.hasLiveQuote && instrument.price > 0;
 }
 
+bool _isDomesticExtendedSessionNow() {
+  final now = _nowInKst();
+  return _isKoreanWeekday(now) &&
+      _minutesSinceMidnight(now) >= 8 * 60 &&
+      _minutesSinceMidnight(now) <= 20 * 60;
+}
+
+DateTime _nowInKst() {
+  return DateTime.now().toUtc().add(const Duration(hours: 9));
+}
+
+bool _isKoreanWeekday(DateTime value) {
+  return value.weekday >= DateTime.monday && value.weekday <= DateTime.friday;
+}
+
+int _minutesSinceMidnight(DateTime value) {
+  return value.hour * 60 + value.minute;
+}
+
 String _priceCurrencySuffix(_Instrument instrument) {
   return switch (instrument.assetClass) {
     _AssetClass.overseasStock => 'USD',
     _AssetClass.crypto => instrument.symbol.endsWith('-USDT') ? 'USDT' : '원',
     _AssetClass.domesticStock => '원',
+  };
+}
+
+String _kisEnvironmentLabel(String? environment) {
+  return switch (environment) {
+    'live' => '실전투자',
+    'paper' => '모의투자',
+    _ => '투자',
   };
 }
 
