@@ -150,6 +150,24 @@ class TradingRepository {
     return DomesticStockOrderResult.fromUpbitJson(data);
   }
 
+  Future<UpbitOrderActionResult> cancelUpbitOrder(String orderId) async {
+    final data = await _apiClient.postJson(
+      '/trading/upbit/orders/cancel',
+      data: {'order_id': orderId},
+    );
+    return UpbitOrderActionResult.fromJson(data);
+  }
+
+  Future<UpbitOrderActionResult> amendUpbitOrder(
+    UpbitOrderAmendDraft draft,
+  ) async {
+    final data = await _apiClient.postJson(
+      '/trading/upbit/orders/amend',
+      data: draft.toJson(),
+    );
+    return UpbitOrderActionResult.fromJson(data);
+  }
+
   Future<TradingConsentStatus> loadTradingRiskNoticeConsent() async {
     final data =
         await _apiClient.getJson('/trading/consents/trading-risk-notice');
@@ -743,6 +761,56 @@ class UpbitOrderDraft {
       if (quantity != null) 'quantity': quantity,
       if (price != null) 'price': price,
     };
+  }
+}
+
+class UpbitOrderAmendDraft {
+  const UpbitOrderAmendDraft({
+    required this.orderId,
+    required this.price,
+    required this.useRemainingQuantity,
+    this.quantity,
+  });
+
+  final String orderId;
+  final num price;
+  final bool useRemainingQuantity;
+  final num? quantity;
+
+  Map<String, dynamic> toJson() {
+    return {
+      'order_id': orderId,
+      'order_kind': 'limit',
+      'price': price,
+      'use_remaining_quantity': useRemainingQuantity,
+      if (!useRemainingQuantity && quantity != null) 'quantity': quantity,
+    };
+  }
+}
+
+class UpbitOrderActionResult {
+  const UpbitOrderActionResult({
+    required this.action,
+    required this.orderId,
+    this.brokerOrderNo,
+    this.newBrokerOrderNo,
+    this.brokerState,
+  });
+
+  final String action;
+  final String orderId;
+  final String? brokerOrderNo;
+  final String? newBrokerOrderNo;
+  final String? brokerState;
+
+  factory UpbitOrderActionResult.fromJson(Map<String, dynamic> json) {
+    return UpbitOrderActionResult(
+      action: json['action']?.toString() ?? '',
+      orderId: json['order_id']?.toString() ?? '',
+      brokerOrderNo: json['broker_order_no']?.toString(),
+      newBrokerOrderNo: json['new_broker_order_no']?.toString(),
+      brokerState: json['broker_state']?.toString(),
+    );
   }
 }
 

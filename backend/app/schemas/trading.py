@@ -369,6 +369,7 @@ class MarketStatusItem(BaseModel):
 class MarketStatusResponse(BaseModel):
     environment: BrokerEnvironment
     items: list[MarketStatusItem]
+    raw_summary: dict[str, Any] = Field(default_factory=dict)
 
 
 class DomesticStockQuoteResponse(BaseModel):
@@ -535,6 +536,46 @@ class UpbitOrderResponse(BaseModel):
     price: Decimal | None = None
     dry_run: bool = False
     broker_order_no: str | None = None
+    broker_order_time: str | None = None
+    broker_state: str | None = None
+    request_payload: dict[str, Any] = Field(default_factory=dict)
+    raw_output: dict[str, Any] = Field(default_factory=dict)
+
+
+class UpbitOrderCancelRequest(BaseModel):
+    order_id: str = Field(min_length=8, max_length=120)
+    dry_run: bool = False
+
+
+class UpbitOrderAmendRequest(BaseModel):
+    order_id: str = Field(min_length=8, max_length=120)
+    order_kind: OrderKind = OrderKind.limit
+    quantity: Decimal | None = Field(default=None, gt=0)
+    price: Decimal | None = Field(default=None, gt=0)
+    use_remaining_quantity: bool = True
+    time_in_force: str | None = Field(default=None, max_length=20)
+    client_order_id: str | None = Field(default=None, max_length=32)
+    dry_run: bool = False
+
+    @model_validator(mode="after")
+    def validate_upbit_amend(self):
+        if self.order_kind != OrderKind.limit:
+            raise ValueError("Upbit amend currently supports limit orders only.")
+        if self.price is None or self.price <= 0:
+            raise ValueError("Amended limit orders require a positive price.")
+        if not self.use_remaining_quantity and (
+            self.quantity is None or self.quantity <= 0
+        ):
+            raise ValueError("Amended quantity is required when not using remaining quantity.")
+        return self
+
+
+class UpbitOrderActionResponse(BaseModel):
+    action: str
+    order_id: str
+    dry_run: bool = False
+    broker_order_no: str | None = None
+    new_broker_order_no: str | None = None
     broker_order_time: str | None = None
     broker_state: str | None = None
     request_payload: dict[str, Any] = Field(default_factory=dict)

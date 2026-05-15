@@ -7,7 +7,13 @@ import unittest
 from decimal import Decimal
 
 from app.core.config import Settings
-from app.schemas.trading import OrderKind, OrderSide, UpbitOrderRequest
+from app.schemas.trading import (
+    OrderKind,
+    OrderSide,
+    UpbitOrderAmendRequest,
+    UpbitOrderCancelRequest,
+    UpbitOrderRequest,
+)
 from app.services.upbit import UpbitClient, UpbitOrderValidationError
 
 
@@ -170,6 +176,45 @@ class UpbitClientTest(unittest.TestCase):
         self.assertEqual(len(activity.executions), 1)
         self.assertEqual(activity.executions[0].side, OrderSide.sell)
         self.assertEqual(activity.executions[0].average_price, Decimal("100000000"))
+
+    def test_cancel_order_dry_run_builds_uuid_payload(self) -> None:
+        result = self.client.cancel_order(
+            UpbitOrderCancelRequest(order_id="order-uuid", dry_run=True)
+        )
+
+        self.assertTrue(result.dry_run)
+        self.assertEqual(result.action, "cancel")
+        self.assertEqual(result.request_payload["uuid"], "order-uuid")
+
+    def test_amend_order_dry_run_uses_remaining_quantity_by_default(self) -> None:
+        result = self.client.amend_order(
+            UpbitOrderAmendRequest(
+                order_id="order-uuid",
+                price=Decimal("2100"),
+                dry_run=True,
+            )
+        )
+
+        self.assertTrue(result.dry_run)
+        self.assertEqual(result.action, "amend")
+        self.assertEqual(result.request_payload["prev_order_uuid"], "order-uuid")
+        self.assertEqual(result.request_payload["new_ord_type"], "limit")
+        self.assertEqual(result.request_payload["new_volume"], "remain_only")
+        self.assertEqual(result.request_payload["new_price"], "2100")
+
+    def test_amend_order_dry_run_can_replace_quantity(self) -> None:
+        result = self.client.amend_order(
+            UpbitOrderAmendRequest(
+                order_id="order-uuid",
+                use_remaining_quantity=False,
+                quantity=Decimal("12.5"),
+                price=Decimal("2200"),
+                dry_run=True,
+            )
+        )
+
+        self.assertEqual(result.request_payload["new_volume"], "12.5")
+        self.assertEqual(result.request_payload["new_price"], "2200")
 
 
 if __name__ == "__main__":

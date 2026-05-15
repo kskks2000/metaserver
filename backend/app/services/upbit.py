@@ -22,6 +22,9 @@ from app.schemas.trading import (
     OrderKind,
     OrderSide,
     TradingOrderActivityResponse,
+    UpbitOrderActionResponse,
+    UpbitOrderAmendRequest,
+    UpbitOrderCancelRequest,
     UpbitConnectionStatusResponse,
     UpbitMarketItem,
     UpbitMarketSearchResponse,
@@ -66,6 +69,8 @@ class UpbitClient:
     ORDERBOOK_PATH = "/v1/orderbook"
     ORDER_CHANCE_PATH = "/v1/orders/chance"
     ORDERS_PATH = "/v1/orders"
+    ORDER_PATH = "/v1/order"
+    CANCEL_AND_NEW_PATH = "/v1/orders/cancel_and_new"
     OPEN_ORDERS_PATH = "/v1/orders/open"
     CLOSED_ORDERS_PATH = "/v1/orders/closed"
     KST = ZoneInfo("Asia/Seoul")
@@ -430,6 +435,84 @@ class UpbitClient:
             raw_output=data,
         )
 
+    def cancel_order(self, payload: UpbitOrderCancelRequest) -> UpbitOrderActionResponse:
+        order_id = payload.order_id.strip()
+        request_payload = {"uuid": order_id}
+        if payload.dry_run:
+            return UpbitOrderActionResponse(
+                action="cancel",
+                order_id=order_id,
+                dry_run=True,
+                request_payload=request_payload,
+            )
+        self._ensure_live_trading_enabled()
+        data = self._authenticated_request(
+            "DELETE",
+            self.ORDER_PATH,
+            params=request_payload,
+        )
+        output = self._first_dict(data)
+        return UpbitOrderActionResponse(
+            action="cancel",
+            order_id=order_id,
+            broker_order_no=str(output.get("uuid") or order_id),
+            broker_order_time=str(output.get("created_at") or "") or None,
+            broker_state=str(output.get("state") or "") or None,
+            request_payload=request_payload,
+            raw_output=output,
+        )
+
+    def amend_order(self, payload: UpbitOrderAmendRequest) -> UpbitOrderActionResponse:
+        order_id = payload.order_id.strip()
+        request_payload: dict[str, str] = {
+            "prev_order_uuid": order_id,
+            "new_ord_type": "limit",
+            "new_volume": (
+                "remain_only"
+                if payload.use_remaining_quantity
+                else self._decimal_text(payload.quantity)
+            ),
+            "new_price": self._decimal_text(payload.price),
+        }
+        if payload.time_in_force:
+            request_payload["new_time_in_force"] = payload.time_in_force
+        if payload.client_order_id:
+            request_payload["new_identifier"] = payload.client_order_id
+
+        if payload.dry_run:
+            return UpbitOrderActionResponse(
+                action="amend",
+                order_id=order_id,
+                dry_run=True,
+                request_payload=request_payload,
+            )
+        self._ensure_live_trading_enabled()
+        data = self._authenticated_request(
+            "POST",
+            self.CANCEL_AND_NEW_PATH,
+            json_body=request_payload,
+        )
+        output = self._first_dict(data)
+        return UpbitOrderActionResponse(
+            action="amend",
+            order_id=order_id,
+            broker_order_no=str(
+                output.get("cancel_order_uuid")
+                or output.get("prev_order_uuid")
+                or order_id
+            ),
+            new_broker_order_no=str(
+                output.get("new_order_uuid")
+                or output.get("uuid")
+                or ""
+            )
+            or None,
+            broker_order_time=str(output.get("created_at") or "") or None,
+            broker_state=str(output.get("state") or "") or None,
+            request_payload=request_payload,
+            raw_output=output,
+        )
+
     def _accounts(self) -> list[dict[str, Any]]:
         data = self._authenticated_request("GET", self.ACCOUNTS_PATH)
         return self._as_list(data)
@@ -477,6 +560,12 @@ class UpbitClient:
             str(item.get("market") or "").upper(): item
             for item in self._as_list(data)
         }
+
+    def _ensure_live_trading_enabled(self) -> None:
+        if not self._settings.upbit_live_trading_enabled:
+            raise UpbitOrderValidationError(
+                "Upbit live trading is disabled. Enable UPBIT_LIVE_TRADING_ENABLED to change orders."
+            )
 
     def _activity_item(self, item: dict[str, Any]) -> KisOrderActivityItem:
         market = self._normalize_market(str(item.get("market") or "KRW-"))

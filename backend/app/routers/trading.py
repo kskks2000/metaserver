@@ -24,6 +24,7 @@ from app.schemas.trading import (
     KisConnectionStatusResponse,
     KisOrderActivityResponse,
     KisPortfolioResponse,
+    MarketStatusItem,
     MarketStatusResponse,
     OverseasStockOrderRequest,
     OverseasStockOrderResponse,
@@ -35,7 +36,10 @@ from app.schemas.trading import (
     TradingOrderActivityResponse,
     UpbitConnectionStatusResponse,
     UpbitMarketSearchResponse,
+    UpbitOrderActionResponse,
+    UpbitOrderAmendRequest,
     UpbitOrderChanceResponse,
+    UpbitOrderCancelRequest,
     UpbitOrderRequest,
     UpbitOrderResponse,
     UpbitOrderbookResponse,
@@ -467,11 +471,42 @@ def order_activity(
 def market_status(
     environment: BrokerEnvironment | None = None,
 ) -> MarketStatusResponse:
+    errors = []
     try:
-        return get_kis_client().market_status(environment=environment)
+        response = get_kis_client().market_status(environment=environment)
     except (KisConfigurationError, KisApiError) as exc:
-        _raise_kis_error(exc)
-        raise
+        response = MarketStatusResponse(
+            environment=environment
+            or BrokerEnvironment(get_settings().kis_default_environment),
+            items=[],
+            raw_summary={"kis_error": str(exc)},
+        )
+        errors.append({"broker": "kis", "message": str(exc)})
+
+    for market in ("KRW-BTC", "KRW-ETH", "KRW-XRP", "KRW-SOL"):
+        try:
+            ticker = get_upbit_client().ticker(market)
+            response.items.append(
+                MarketStatusItem(
+                    label=f"UPBIT {market.split('-', maxsplit=1)[1]}",
+                    value=ticker.price,
+                    change=ticker.change_price,
+                    change_rate=ticker.change_rate,
+                    raw_output=ticker.raw_output,
+                )
+            )
+        except UpbitApiError as exc:
+            errors.append({"broker": "upbit", "market": market, "message": str(exc)})
+
+    if not response.items and errors:
+        first = errors[0]
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"message": first["message"], "errors": errors},
+        )
+    if errors:
+        response.raw_summary = {**response.raw_summary, "errors": errors}
+    return response
 
 
 @router.get("/kis/order-activity", response_model=KisOrderActivityResponse)
@@ -556,6 +591,38 @@ def place_upbit_order(
     payload.market = payload.market.upper()
     try:
         return get_upbit_client().place_order(payload)
+    except (UpbitConfigurationError, UpbitOrderValidationError, UpbitApiError) as exc:
+        _raise_upbit_error(exc)
+        raise
+
+
+@router.post(
+    "/upbit/orders/cancel",
+    response_model=UpbitOrderActionResponse,
+)
+def cancel_upbit_order(
+    payload: UpbitOrderCancelRequest,
+    principal: FirebasePrincipal = Depends(get_current_principal),
+) -> UpbitOrderActionResponse:
+    del principal
+    try:
+        return get_upbit_client().cancel_order(payload)
+    except (UpbitConfigurationError, UpbitOrderValidationError, UpbitApiError) as exc:
+        _raise_upbit_error(exc)
+        raise
+
+
+@router.post(
+    "/upbit/orders/amend",
+    response_model=UpbitOrderActionResponse,
+)
+def amend_upbit_order(
+    payload: UpbitOrderAmendRequest,
+    principal: FirebasePrincipal = Depends(get_current_principal),
+) -> UpbitOrderActionResponse:
+    del principal
+    try:
+        return get_upbit_client().amend_order(payload)
     except (UpbitConfigurationError, UpbitOrderValidationError, UpbitApiError) as exc:
         _raise_upbit_error(exc)
         raise

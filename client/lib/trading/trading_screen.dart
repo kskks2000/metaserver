@@ -1768,6 +1768,7 @@ class _TradingHomeTab extends ConsumerWidget {
                 builder: (context, constraints) {
                   final holdingsPanel = _HoldingsPanel(
                     portfolio: portfolio,
+                    upbitPortfolio: cachedUpbitPortfolio,
                     loading: loading,
                     errorMessage: errorMessage,
                     instruments: instruments,
@@ -2856,6 +2857,7 @@ class _ActivityTab extends ConsumerStatefulWidget {
 
 class _ActivityTabState extends ConsumerState<_ActivityTab> {
   late Future<KisOrderActivity> _activityFuture;
+  String? _workingOrderId;
 
   @override
   void initState() {
@@ -2870,6 +2872,83 @@ class _ActivityTabState extends ConsumerState<_ActivityTab> {
   void _refreshActivity() {
     setState(() {
       _activityFuture = _loadActivity();
+    });
+  }
+
+  Future<void> _withOrderAction(
+    KisOrderActivityItem order,
+    Future<void> Function() action,
+  ) async {
+    final orderId = order.orderNo?.trim();
+    if (orderId == null || orderId.isEmpty || _workingOrderId != null) return;
+    setState(() => _workingOrderId = orderId);
+    try {
+      await action();
+      if (!mounted) return;
+      _refreshActivity();
+    } catch (error) {
+      if (!mounted) return;
+      final message = apiFailureMessage(error) ?? error.toString();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(message)),
+      );
+    } finally {
+      if (mounted) setState(() => _workingOrderId = null);
+    }
+  }
+
+  Future<void> _showCancelOrderDialog(KisOrderActivityItem order) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('미체결 주문 취소'),
+        content: Text(
+          '${order.name} ${_cryptoBaseSymbol(order.symbol)} 주문을 취소합니다.\n남은 수량 ${_formatQuantity(order.remainingQuantity)}개',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('닫기'),
+          ),
+          FilledButton.icon(
+            onPressed: () => Navigator.of(context).pop(true),
+            icon: const Icon(Icons.delete_outline_rounded),
+            label: const Text('취소 전송'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    await _withOrderAction(order, () async {
+      final orderId = order.orderNo!.trim();
+      await ref.read(tradingRepositoryProvider).cancelUpbitOrder(orderId);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Upbit 취소 주문을 전송했습니다.')),
+      );
+    });
+  }
+
+  Future<void> _showAmendOrderDialog(KisOrderActivityItem order) async {
+    final result = await showDialog<UpbitOrderAmendDraft>(
+      context: context,
+      builder: (context) => _UpbitAmendOrderDialog(order: order),
+    );
+    if (result == null) return;
+    await _withOrderAction(order, () async {
+      final response =
+          await ref.read(tradingRepositoryProvider).amendUpbitOrder(result);
+      if (!mounted) return;
+      final newOrderNo = response.newBrokerOrderNo;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            newOrderNo == null || newOrderNo.isEmpty
+                ? 'Upbit 정정 주문을 전송했습니다.'
+                : 'Upbit 정정 주문을 전송했습니다. 새 주문번호: $newOrderNo',
+          ),
+        ),
+      );
     });
   }
 
@@ -2906,7 +2985,16 @@ class _ActivityTabState extends ConsumerState<_ActivityTab> {
                   emptyMessage: '현재 미체결 주문이 없습니다.',
                   children: [
                     for (final order in openOrderItems)
-                      _OrderTile(order: order),
+                      _OrderTile(
+                        order: order,
+                        working: _workingOrderId == order.orderNo,
+                        onAmend: order.isCrypto
+                            ? () => _showAmendOrderDialog(order)
+                            : null,
+                        onCancel: order.isCrypto
+                            ? () => _showCancelOrderDialog(order)
+                            : null,
+                      ),
                   ],
                 ),
               );
@@ -2984,6 +3072,165 @@ class _ActivityPanelBody extends StatelessWidget {
     }
 
     return Column(children: children);
+  }
+}
+
+class _UpbitAmendOrderDialog extends StatefulWidget {
+  const _UpbitAmendOrderDialog({required this.order});
+
+  final KisOrderActivityItem order;
+
+  @override
+  State<_UpbitAmendOrderDialog> createState() => _UpbitAmendOrderDialogState();
+}
+
+class _UpbitAmendOrderDialogState extends State<_UpbitAmendOrderDialog> {
+  late final TextEditingController _priceController;
+  late final TextEditingController _quantityController;
+  bool _useRemainingQuantity = true;
+  String? _errorMessage;
+
+  @override
+  void initState() {
+    super.initState();
+    final price = widget.order.price > 0
+        ? widget.order.price
+        : widget.order.averagePrice;
+    _priceController = TextEditingController(
+      text: price > 0
+          ? formatDecimalInputText(price, maxDecimalPlaces: 8)
+          : '',
+    );
+    _quantityController = TextEditingController(
+      text: widget.order.remainingQuantity > 0
+          ? formatDecimalInputText(
+              widget.order.remainingQuantity,
+              maxDecimalPlaces: 8,
+            )
+          : '',
+    );
+  }
+
+  @override
+  void dispose() {
+    _priceController.dispose();
+    _quantityController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final baseSymbol = _cryptoBaseSymbol(widget.order.symbol);
+    return AlertDialog(
+      title: const Text('Upbit 주문 정정'),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text(
+              '${widget.order.name} · ${widget.order.symbol}',
+              style: const TextStyle(fontWeight: FontWeight.w900),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              '남은 수량 ${_formatQuantity(widget.order.remainingQuantity)} $baseSymbol',
+              style: TextStyle(
+                color: MetaServerColors.ink.withValues(alpha: 0.64),
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            const SizedBox(height: 14),
+            TextField(
+              controller: _priceController,
+              keyboardType:
+                  const TextInputType.numberWithOptions(decimal: true),
+              inputFormatters: const [
+                DecimalThousandsSeparatorInputFormatter(maxDecimalPlaces: 8),
+              ],
+              decoration: const InputDecoration(
+                labelText: '정정 가격',
+                suffixText: 'KRW',
+              ),
+              onChanged: (_) => setState(() => _errorMessage = null),
+            ),
+            const SizedBox(height: 10),
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              value: _useRemainingQuantity,
+              onChanged: (value) => setState(() {
+                _useRemainingQuantity = value;
+                _errorMessage = null;
+              }),
+              title: const Text('남은 수량 그대로 정정'),
+              subtitle: const Text('부분체결된 주문도 현재 미체결 잔량만 새 주문으로 넘깁니다.'),
+            ),
+            TextField(
+              controller: _quantityController,
+              enabled: !_useRemainingQuantity,
+              keyboardType:
+                  const TextInputType.numberWithOptions(decimal: true),
+              inputFormatters: const [
+                DecimalThousandsSeparatorInputFormatter(maxDecimalPlaces: 8),
+              ],
+              decoration: InputDecoration(
+                labelText: '새 주문 수량',
+                suffixText: baseSymbol,
+              ),
+              onChanged: (_) => setState(() => _errorMessage = null),
+            ),
+            if (_errorMessage != null) ...[
+              const SizedBox(height: 10),
+              Text(
+                _errorMessage!,
+                style: const TextStyle(
+                  color: MetaServerColors.danger,
+                  fontWeight: FontWeight.w900,
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('닫기'),
+        ),
+        FilledButton.icon(
+          onPressed: _submit,
+          icon: const Icon(Icons.edit_rounded),
+          label: const Text('정정 전송'),
+        ),
+      ],
+    );
+  }
+
+  void _submit() {
+    final orderId = widget.order.orderNo?.trim() ?? '';
+    final price = double.tryParse(removeNumberGrouping(_priceController.text));
+    final quantity =
+        double.tryParse(removeNumberGrouping(_quantityController.text));
+    if (orderId.isEmpty) {
+      setState(() => _errorMessage = '주문번호를 확인할 수 없습니다.');
+      return;
+    }
+    if (price == null || price <= 0) {
+      setState(() => _errorMessage = '정정 가격을 입력해 주세요.');
+      return;
+    }
+    if (!_useRemainingQuantity && (quantity == null || quantity <= 0)) {
+      setState(() => _errorMessage = '새 주문 수량을 입력해 주세요.');
+      return;
+    }
+    Navigator.of(context).pop(
+      UpbitOrderAmendDraft(
+        orderId: orderId,
+        price: price,
+        useRemainingQuantity: _useRemainingQuantity,
+        quantity: quantity,
+      ),
+    );
   }
 }
 
@@ -3335,6 +3582,7 @@ class _UpbitSummaryPanel extends StatelessWidget {
 class _HoldingsPanel extends StatelessWidget {
   const _HoldingsPanel({
     required this.portfolio,
+    required this.upbitPortfolio,
     required this.loading,
     required this.errorMessage,
     required this.instruments,
@@ -3342,6 +3590,7 @@ class _HoldingsPanel extends StatelessWidget {
   });
 
   final KisPortfolio? portfolio;
+  final UpbitPortfolio? upbitPortfolio;
   final bool loading;
   final String? errorMessage;
   final List<_Instrument> instruments;
@@ -3349,18 +3598,23 @@ class _HoldingsPanel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final holdings = portfolio?.holdings ?? const <KisHolding>[];
+    final kisHoldings = portfolio?.holdings ?? const <KisHolding>[];
+    final cryptoHoldings = [
+      for (final holding in upbitPortfolio?.holdings ?? const <UpbitHolding>[])
+        if (holding.quantity > 0) _kisHoldingFromUpbit(holding),
+    ];
+    final holdings = [...kisHoldings, ...cryptoHoldings];
     return _Panel(
       title: '보유 종목',
       icon: Icons.pie_chart_outline_rounded,
       child: Column(
         children: [
-          if (loading)
+          if (loading && holdings.isEmpty)
             const _PanelStateMessage(
               icon: Icons.sync_rounded,
               message: 'KIS 계좌 보유종목을 조회 중입니다.',
             )
-          else if (errorMessage != null)
+          else if (errorMessage != null && holdings.isEmpty)
             _PanelStateMessage(
               icon: Icons.error_outline_rounded,
               message: errorMessage!,
@@ -3371,13 +3625,22 @@ class _HoldingsPanel extends StatelessWidget {
               icon: Icons.inventory_2_outlined,
               message: 'KIS 잔고 기준으로 보유수량이 있는 주식이 없습니다.',
             )
-          else
+          else ...[
+            if (errorMessage != null) ...[
+              const _PanelStateMessage(
+                icon: Icons.error_outline_rounded,
+                message: 'KIS 보유종목 일부를 불러오지 못했습니다.',
+                danger: true,
+              ),
+              const SizedBox(height: 10),
+            ],
             for (final holding in holdings)
               _HoldingTile(
                 holding: holding,
                 instrument: _instrumentForHolding(instruments, holding),
                 onOrder: onOrder,
               ),
+          ],
         ],
       ),
     );
@@ -4676,17 +4939,22 @@ class _HoldingTile extends StatelessWidget {
         : instrument.price * holding.quantity;
     final profitRate = holding.profitLossRate;
     final quantity = _formatQuantity(holding.quantity);
+    final isCrypto = holding.assetClass == 'crypto';
+    final quantitySuffix =
+        isCrypto ? _cryptoBaseSymbol(holding.symbol) : '주';
     final currency = holding.currency.trim().isNotEmpty
         ? holding.currency
         : (holding.assetClass == 'overseas_stock' ? 'USD' : 'KRW');
     return _DataTile(
       leading: _IconBadge(
-        icon: Icons.business_center_outlined,
-        color: MetaServerColors.green,
+        icon: isCrypto
+            ? Icons.currency_bitcoin_rounded
+            : Icons.business_center_outlined,
+        color: isCrypto ? MetaServerColors.amber : MetaServerColors.green,
       ),
       title: holding.name,
       subtitle:
-          '${holding.market} · ${holding.symbol} · $quantity주 · 평균 ${_moneyByCurrency(holding.averagePrice, currency)}',
+          '${holding.market} · ${holding.symbol} · $quantity$quantitySuffix · 평균 ${_moneyByCurrency(holding.averagePrice, currency)}',
       trailing: Column(
         crossAxisAlignment: CrossAxisAlignment.end,
         mainAxisSize: MainAxisSize.min,
@@ -5051,14 +5319,25 @@ class _SparklinePainter extends CustomPainter {
 }
 
 class _OrderTile extends StatelessWidget {
-  const _OrderTile({required this.order});
+  const _OrderTile({
+    required this.order,
+    required this.working,
+    this.onAmend,
+    this.onCancel,
+  });
 
   final KisOrderActivityItem order;
+  final bool working;
+  final VoidCallback? onAmend;
+  final VoidCallback? onCancel;
 
   @override
   Widget build(BuildContext context) {
     final sideText = order.isBuy ? '매수' : '매도';
     final price = order.price > 0 ? order.price : order.averagePrice;
+    final quantitySuffix =
+        order.isCrypto ? _cryptoBaseSymbol(order.symbol) : '주';
+    final quantityPrecision = order.isCrypto ? 8 : 2;
     return _DataTile(
       leading: _IconBadge(
         icon: order.isBuy ? Icons.add_chart_rounded : Icons.sell_outlined,
@@ -5072,7 +5351,7 @@ class _OrderTile extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         children: [
           Text(
-            '${_formatQuantity(order.filledQuantity)}/${_formatQuantity(order.quantity)}주',
+            '${_formatQuantity(order.filledQuantity, decimalPlaces: quantityPrecision)}/${_formatQuantity(order.quantity, decimalPlaces: quantityPrecision)}$quantitySuffix',
             style: const TextStyle(fontWeight: FontWeight.w900),
           ),
           const SizedBox(height: 4),
@@ -5086,6 +5365,31 @@ class _OrderTile extends StatelessWidget {
           ),
         ],
       ),
+      actions: [
+        if (working)
+          const Padding(
+            padding: EdgeInsets.only(left: 8),
+            child: SizedBox(
+              width: 24,
+              height: 24,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            ),
+          )
+        else ...[
+          if (onAmend != null)
+            _MiniAction(
+              label: '정정',
+              icon: Icons.edit_rounded,
+              onTap: onAmend!,
+            ),
+          if (onCancel != null)
+            _MiniAction(
+              label: '취소',
+              icon: Icons.delete_outline_rounded,
+              onTap: onCancel!,
+            ),
+        ],
+      ],
     );
   }
 }
@@ -6222,6 +6526,24 @@ _Instrument _instrumentForHolding(
     tradeAmount: 0,
     chart: [if (price > 0) price / 1000 else 0],
     hasLiveQuote: price > 0,
+  );
+}
+
+KisHolding _kisHoldingFromUpbit(UpbitHolding holding) {
+  return KisHolding(
+    symbol: holding.market.isNotEmpty ? holding.market : 'KRW-${holding.symbol}',
+    name: holding.name.isNotEmpty ? holding.name : holding.symbol,
+    quantity: holding.quantity,
+    assetClass: 'crypto',
+    market: 'UPBIT',
+    currency: holding.currency.isNotEmpty ? holding.currency : 'KRW',
+    orderableQuantity: holding.orderableQuantity,
+    averagePrice: holding.averagePrice,
+    currentPrice: holding.currentPrice,
+    purchaseAmount: holding.purchaseAmount,
+    evaluationAmount: holding.evaluationAmount,
+    profitLoss: holding.profitLoss,
+    profitLossRate: holding.profitLossRate,
   );
 }
 
