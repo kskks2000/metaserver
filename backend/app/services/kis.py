@@ -12,6 +12,7 @@ import httpx
 
 from app.core.config import Settings, get_settings
 from app.schemas.trading import (
+    AssetClass,
     BrokerEnvironment,
     DomesticStockOrderRequest,
     DomesticStockOrderResponse,
@@ -21,12 +22,15 @@ from app.schemas.trading import (
     KisOrderActivityResponse,
     KisPortfolioHolding,
     KisPortfolioResponse,
+    MarketStatusItem,
+    MarketStatusResponse,
     OrderKind,
     OrderSide,
     OverseasStockOrderRequest,
     OverseasStockOrderResponse,
     OverseasStockQuoteResponse,
 )
+from app.services.krx_directory import krx_stock_directory
 
 
 class KisConfigurationError(RuntimeError):
@@ -91,7 +95,14 @@ class KisClient:
     ORDER_PATH = "/uapi/domestic-stock/v1/trading/order-cash"
     OVERSEAS_ORDER_PATH = "/uapi/overseas-stock/v1/trading/order"
     BALANCE_PATH = "/uapi/domestic-stock/v1/trading/inquire-balance"
+    OVERSEAS_PRESENT_BALANCE_PATH = (
+        "/uapi/overseas-stock/v1/trading/inquire-present-balance"
+    )
     ORDER_ACTIVITY_PATH = "/uapi/domestic-stock/v1/trading/inquire-daily-ccld"
+    INDEX_PRICE_PATH = "/uapi/domestic-stock/v1/quotations/inquire-index-price"
+    OVERSEAS_TIME_INDEX_CHART_PATH = (
+        "/uapi/overseas-price/v1/quotations/inquire-time-indexchartprice"
+    )
     KST = ZoneInfo("Asia/Seoul")
     KRX_ORDER_START = time(8, 30)
     KRX_REGULAR_START = time(9, 0)
@@ -125,6 +136,7 @@ class KisClient:
                 default_environment=environment,
                 live_trading_enabled=self._settings.kis_live_trading_enabled,
                 order_protocol=self._settings.kis_order_protocol,
+                regular_session_only=self._settings.kis_regular_session_only,
                 message=str(exc),
             )
 
@@ -133,6 +145,7 @@ class KisClient:
             default_environment=environment,
             live_trading_enabled=self._settings.kis_live_trading_enabled,
             order_protocol=self._settings.kis_order_protocol,
+            regular_session_only=self._settings.kis_regular_session_only,
             account_no_masked=self._mask_full_account(credentials),
             product_code=credentials.product_code,
             base_url=credentials.base_url,
@@ -234,107 +247,50 @@ class KisClient:
             raw_output=output,
         )
 
+    def market_status(
+        self,
+        environment: BrokerEnvironment | None = None,
+    ) -> MarketStatusResponse:
+        env = environment or BrokerEnvironment(self._settings.kis_default_environment)
+        credentials = self._credentials(env)
+        items = [
+            self._market_index_item(credentials, "KOSPI", "0001"),
+            self._market_index_item(credentials, "KOSDAQ", "1001"),
+        ]
+        try:
+            items.append(self._market_fx_item(credentials, "USD/KRW", "FX@KRW"))
+        except Exception as exc:
+            items.append(
+                MarketStatusItem(label="USD/KRW", raw_output={"error": str(exc)})
+            )
+        return MarketStatusResponse(
+            environment=env,
+            items=items,
+        )
+
     def portfolio(
         self,
         environment: BrokerEnvironment | None = None,
     ) -> KisPortfolioResponse:
         env = environment or BrokerEnvironment(self._settings.kis_default_environment)
         credentials = self._credentials(env)
-        params = {
-            "CANO": credentials.account_no,
-            "ACNT_PRDT_CD": credentials.product_code,
-            "AFHR_FLPR_YN": "N",
-            "OFL_YN": "",
-            "INQR_DVSN": "02",
-            "UNPR_DVSN": "01",
-            "FUND_STTL_ICLD_YN": "N",
-            "FNCG_AMT_AUTO_RDPT_YN": "N",
-            "PRCS_DVSN": "00",
-            "CTX_AREA_FK100": "",
-            "CTX_AREA_NK100": "",
-        }
-        output1: list[dict[str, Any]] = []
-        summaries: list[dict[str, Any]] = []
-        tr_cont = ""
-        for _ in range(10):
-            data, response_headers = self._request_with_headers(
-                credentials,
-                "GET",
-                self.BALANCE_PATH,
-                tr_id=self._balance_tr_id(env),
-                tr_cont=tr_cont,
-                params=params,
-            )
-            output1.extend(self._as_list(data.get("output1")))
-            page_summary = self._first_dict(data.get("output2"))
-            if page_summary:
-                summaries.append(page_summary)
-
-            next_tr_cont = str(response_headers.get("tr_cont") or "").strip()
-            if next_tr_cont not in {"F", "M"}:
-                break
-
-            params["CTX_AREA_FK100"] = self._context_value(
-                data, page_summary, "ctx_area_fk100"
-            )
-            params["CTX_AREA_NK100"] = self._context_value(
-                data, page_summary, "ctx_area_nk100"
-            )
-            if not params["CTX_AREA_FK100"] and not params["CTX_AREA_NK100"]:
-                break
-            tr_cont = "N"
-
+        output1, summaries = self._domestic_balance_pages(credentials, env)
         output2 = summaries[0] if summaries else {}
 
         holdings: list[KisPortfolioHolding] = []
         for item in output1:
-            quantity = self._decimal(item.get("hldg_qty")) or Decimal("0")
-            if quantity <= 0:
-                continue
+            holding = self._domestic_portfolio_holding(item)
+            if holding is not None:
+                holdings.append(holding)
 
-            current_price = self._decimal(item.get("prpr"))
-            average_price = self._decimal(item.get("pchs_avg_pric"))
-            purchase_amount = self._decimal(item.get("pchs_amt"))
-            evaluation_amount = self._decimal(item.get("evlu_amt"))
-            profit_loss = self._decimal(item.get("evlu_pfls_amt"))
-            profit_loss_rate = self._decimal(item.get("evlu_pfls_rt"))
-
-            if evaluation_amount is None and current_price is not None:
-                evaluation_amount = current_price * quantity
-            if (
-                profit_loss is None
-                and evaluation_amount is not None
-                and purchase_amount is not None
-            ):
-                profit_loss = evaluation_amount - purchase_amount
-            if (
-                profit_loss_rate is None
-                and profit_loss is not None
-                and purchase_amount is not None
-                and purchase_amount != 0
-            ):
-                profit_loss_rate = (profit_loss / purchase_amount) * Decimal("100")
-
-            holdings.append(
-                KisPortfolioHolding(
-                    symbol=str(item.get("pdno") or ""),
-                    name=str(
-                        item.get("prdt_name")
-                        or item.get("prdt_name120")
-                        or item.get("pdno")
-                        or ""
-                    ),
-                    quantity=quantity,
-                    orderable_quantity=self._decimal(item.get("ord_psbl_qty")),
-                    average_price=average_price,
-                    current_price=current_price,
-                    purchase_amount=purchase_amount,
-                    evaluation_amount=evaluation_amount,
-                    profit_loss=profit_loss,
-                    profit_loss_rate=profit_loss_rate,
-                    raw_output=item,
-                )
-            )
+        try:
+            overseas_items, _ = self._overseas_present_balance_pages(credentials, env)
+        except KisApiError:
+            overseas_items = []
+        for item in overseas_items:
+            holding = self._overseas_portfolio_holding(item)
+            if holding is not None:
+                holdings.append(holding)
 
         total_purchase_amount = self._decimal_first(
             output2,
@@ -392,6 +348,307 @@ class KisClient:
             orderable_cash=orderable_cash,
             raw_summary=output2,
         )
+
+    def _market_index_item(
+        self,
+        credentials: KisCredentials,
+        label: str,
+        code: str,
+    ) -> MarketStatusItem:
+        data = self._request(
+            credentials,
+            "GET",
+            self.INDEX_PRICE_PATH,
+            tr_id="FHPUP02100000",
+            params={
+                "FID_COND_MRKT_DIV_CODE": "U",
+                "FID_INPUT_ISCD": code,
+            },
+        )
+        output = self._as_dict(data.get("output"))
+        change = self._signed_by_kis_sign(
+            self._decimal_first(output, "bstp_nmix_prdy_vrss", "prdy_vrss"),
+            output.get("prdy_vrss_sign"),
+        )
+        change_rate = self._signed_by_kis_sign(
+            self._decimal_first(output, "bstp_nmix_prdy_ctrt", "prdy_ctrt"),
+            output.get("prdy_vrss_sign"),
+        )
+        return MarketStatusItem(
+            label=label,
+            value=self._decimal_first(output, "bstp_nmix_prpr", "stck_prpr"),
+            change=change,
+            change_rate=change_rate,
+            raw_output=output,
+        )
+
+    def _market_fx_item(
+        self,
+        credentials: KisCredentials,
+        label: str,
+        code: str,
+    ) -> MarketStatusItem:
+        data = self._request(
+            credentials,
+            "GET",
+            self.OVERSEAS_TIME_INDEX_CHART_PATH,
+            tr_id="FHKST03030200",
+            params={
+                "FID_COND_MRKT_DIV_CODE": "X",
+                "FID_INPUT_ISCD": code,
+                "FID_HOUR_CLS_CODE": "0",
+                "FID_PW_DATA_INCU_YN": "Y",
+            },
+        )
+        output = self._first_dict(data.get("output1"))
+        change = self._signed_by_kis_sign(
+            self._decimal_first(output, "ovrs_nmix_prdy_vrss", "prdy_vrss"),
+            output.get("prdy_vrss_sign"),
+        )
+        change_rate = self._signed_by_kis_sign(
+            self._decimal_first(output, "prdy_ctrt", "ovrs_nmix_prdy_ctrt"),
+            output.get("prdy_vrss_sign"),
+        )
+        return MarketStatusItem(
+            label=label,
+            value=self._decimal_first(output, "ovrs_nmix_prpr", "stck_prpr"),
+            change=change,
+            change_rate=change_rate,
+            raw_output=output,
+        )
+
+    def _domestic_balance_pages(
+        self,
+        credentials: KisCredentials,
+        env: BrokerEnvironment,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        params = {
+            "CANO": credentials.account_no,
+            "ACNT_PRDT_CD": credentials.product_code,
+            "AFHR_FLPR_YN": "N",
+            "OFL_YN": "",
+            "INQR_DVSN": "02",
+            "UNPR_DVSN": "01",
+            "FUND_STTL_ICLD_YN": "N",
+            "FNCG_AMT_AUTO_RDPT_YN": "N",
+            "PRCS_DVSN": "00",
+            "CTX_AREA_FK100": "",
+            "CTX_AREA_NK100": "",
+        }
+        output1: list[dict[str, Any]] = []
+        summaries: list[dict[str, Any]] = []
+        tr_cont = ""
+        for _ in range(10):
+            data, response_headers = self._request_with_headers(
+                credentials,
+                "GET",
+                self.BALANCE_PATH,
+                tr_id=self._balance_tr_id(env),
+                tr_cont=tr_cont,
+                params=params,
+            )
+            output1.extend(self._as_list(data.get("output1")))
+            page_summary = self._first_dict(data.get("output2"))
+            if page_summary:
+                summaries.append(page_summary)
+
+            next_tr_cont = str(response_headers.get("tr_cont") or "").strip()
+            if next_tr_cont not in {"F", "M"}:
+                break
+
+            params["CTX_AREA_FK100"] = self._context_value(
+                data, page_summary, "ctx_area_fk100"
+            )
+            params["CTX_AREA_NK100"] = self._context_value(
+                data, page_summary, "ctx_area_nk100"
+            )
+            if not params["CTX_AREA_FK100"] and not params["CTX_AREA_NK100"]:
+                break
+            tr_cont = "N"
+        return output1, summaries
+
+    def _overseas_present_balance_pages(
+        self,
+        credentials: KisCredentials,
+        env: BrokerEnvironment,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        params = {
+            "CANO": credentials.account_no,
+            "ACNT_PRDT_CD": credentials.product_code,
+            "WCRC_FRCR_DVSN_CD": "01",
+            "NATN_CD": "000",
+            "TR_MKET_CD": "00",
+            "INQR_DVSN_CD": "00",
+        }
+        data, _ = self._request_with_headers(
+            credentials,
+            "GET",
+            self.OVERSEAS_PRESENT_BALANCE_PATH,
+            tr_id=self._overseas_present_balance_tr_id(env),
+            params=params,
+        )
+        summaries = [
+            item
+            for value in (data.get("output2"), data.get("output3"))
+            for item in self._as_list(value)
+        ]
+        return self._as_list(data.get("output1")), summaries
+
+    def _domestic_portfolio_holding(
+        self,
+        item: dict[str, Any],
+    ) -> KisPortfolioHolding | None:
+        quantity = self._decimal(item.get("hldg_qty")) or Decimal("0")
+        if quantity <= 0:
+            return None
+
+        current_price = self._decimal(item.get("prpr"))
+        average_price = self._decimal(item.get("pchs_avg_pric"))
+        purchase_amount = self._decimal(item.get("pchs_amt"))
+        evaluation_amount = self._decimal(item.get("evlu_amt"))
+        profit_loss = self._decimal(item.get("evlu_pfls_amt"))
+        profit_loss_rate = self._decimal(item.get("evlu_pfls_rt"))
+        profit_loss, profit_loss_rate = self._complete_profit_fields(
+            quantity=quantity,
+            current_price=current_price,
+            purchase_amount=purchase_amount,
+            evaluation_amount=evaluation_amount,
+            profit_loss=profit_loss,
+            profit_loss_rate=profit_loss_rate,
+        )
+        if evaluation_amount is None and current_price is not None:
+            evaluation_amount = current_price * quantity
+
+        return KisPortfolioHolding(
+            symbol=str(item.get("pdno") or ""),
+            name=str(
+                item.get("prdt_name")
+                or item.get("prdt_name120")
+                or item.get("pdno")
+                or ""
+            ),
+            asset_class=AssetClass.domestic_stock,
+            market=self._domestic_market_for_symbol(str(item.get("pdno") or "")),
+            currency="KRW",
+            quantity=quantity,
+            orderable_quantity=self._decimal(item.get("ord_psbl_qty")),
+            average_price=average_price,
+            current_price=current_price,
+            purchase_amount=purchase_amount,
+            evaluation_amount=evaluation_amount,
+            profit_loss=profit_loss,
+            profit_loss_rate=profit_loss_rate,
+            raw_output=item,
+        )
+
+    def _overseas_portfolio_holding(
+        self,
+        item: dict[str, Any],
+    ) -> KisPortfolioHolding | None:
+        quantity = self._decimal_first(
+            item,
+            "ovrs_cblc_qty",
+            "cblc_qty",
+            "hldg_qty",
+            "qty",
+        ) or Decimal("0")
+        if quantity <= 0:
+            return None
+
+        current_price = self._decimal_first(
+            item,
+            "now_pric2",
+            "ovrs_now_pric1",
+            "last",
+            "stck_prpr",
+        )
+        average_price = self._decimal_first(
+            item,
+            "pchs_avg_pric",
+            "frcr_pchs_avg_pric",
+            "pchs_avg_pric1",
+        )
+        purchase_amount = self._decimal_first(
+            item,
+            "frcr_pchs_amt1",
+            "pchs_amt",
+            "pchs_amt_smtl_amt",
+        )
+        evaluation_amount = self._decimal_first(
+            item,
+            "ovrs_stck_evlu_amt",
+            "frcr_evlu_amt2",
+            "evlu_amt",
+            "evlu_amt_smtl_amt",
+        )
+        profit_loss = self._decimal_first(
+            item,
+            "frcr_evlu_pfls_amt",
+            "ovrs_stck_evlu_pfls_amt",
+            "evlu_pfls_amt",
+        )
+        profit_loss_rate = self._decimal_first(
+            item,
+            "evlu_pfls_rt",
+            "evlu_erng_rt",
+        )
+        profit_loss, profit_loss_rate = self._complete_profit_fields(
+            quantity=quantity,
+            current_price=current_price,
+            purchase_amount=purchase_amount,
+            evaluation_amount=evaluation_amount,
+            profit_loss=profit_loss,
+            profit_loss_rate=profit_loss_rate,
+        )
+        if evaluation_amount is None and current_price is not None:
+            evaluation_amount = current_price * quantity
+
+        symbol = str(item.get("ovrs_pdno") or item.get("pdno") or "")
+        return KisPortfolioHolding(
+            symbol=symbol,
+            name=str(item.get("ovrs_item_name") or item.get("prdt_name") or symbol),
+            asset_class=AssetClass.overseas_stock,
+            market=self._normalize_overseas_market(
+                str(item.get("ovrs_excg_cd") or item.get("tr_mket_cd") or "")
+            ),
+            currency=str(item.get("tr_crcy_cd") or item.get("crcy_cd") or "USD"),
+            quantity=quantity,
+            orderable_quantity=self._decimal(item.get("ord_psbl_qty")),
+            average_price=average_price,
+            current_price=current_price,
+            purchase_amount=purchase_amount,
+            evaluation_amount=evaluation_amount,
+            profit_loss=profit_loss,
+            profit_loss_rate=profit_loss_rate,
+            raw_output=item,
+        )
+
+    def _complete_profit_fields(
+        self,
+        *,
+        quantity: Decimal,
+        current_price: Decimal | None,
+        purchase_amount: Decimal | None,
+        evaluation_amount: Decimal | None,
+        profit_loss: Decimal | None,
+        profit_loss_rate: Decimal | None,
+    ) -> tuple[Decimal | None, Decimal | None]:
+        if evaluation_amount is None and current_price is not None:
+            evaluation_amount = current_price * quantity
+        if (
+            profit_loss is None
+            and evaluation_amount is not None
+            and purchase_amount is not None
+        ):
+            profit_loss = evaluation_amount - purchase_amount
+        if (
+            profit_loss_rate is None
+            and profit_loss is not None
+            and purchase_amount is not None
+            and purchase_amount != 0
+        ):
+            profit_loss_rate = (profit_loss / purchase_amount) * Decimal("100")
+        return profit_loss, profit_loss_rate
 
     def order_activity(
         self,
@@ -838,6 +1095,12 @@ class KisClient:
         return "VTTC8001R"
 
     @staticmethod
+    def _overseas_present_balance_tr_id(environment: BrokerEnvironment) -> str:
+        if environment == BrokerEnvironment.live:
+            return "CTRP6504R"
+        return "VTRP6504R"
+
+    @staticmethod
     def _overseas_order_tr_id(environment: BrokerEnvironment, side: OrderSide) -> str:
         prefix = "T" if environment == BrokerEnvironment.live else "V"
         suffix = "1002U" if side == OrderSide.buy else "1006U"
@@ -861,6 +1124,46 @@ class KisClient:
                 "US stock market_code must be one of NASDAQ, NYSE, or AMEX."
             )
         return market
+
+    @staticmethod
+    def _normalize_overseas_market(value: str) -> str:
+        normalized = value.strip().upper().replace("-", "").replace("_", "")
+        markets = {
+            "NAS": "NASDAQ",
+            "NASD": "NASDAQ",
+            "NASDAQ": "NASDAQ",
+            "NYS": "NYSE",
+            "NYSE": "NYSE",
+            "AMS": "AMEX",
+            "AMEX": "AMEX",
+            "SEHK": "SEHK",
+            "SHAA": "SHAA",
+            "SZAA": "SZAA",
+            "TKSE": "TKSE",
+            "HASE": "HASE",
+            "VNSE": "VNSE",
+        }
+        return markets.get(normalized, normalized or "OVERSEAS")
+
+    @staticmethod
+    def _domestic_market_for_symbol(symbol: str) -> str:
+        try:
+            item = krx_stock_directory.by_symbol(symbol)
+        except httpx.HTTPError:
+            item = None
+        return item.market if item is not None else "KOSPI"
+
+    @staticmethod
+    def _signed_by_kis_sign(
+        value: Decimal | None,
+        sign: Any,
+    ) -> Decimal | None:
+        if value is None:
+            return None
+        sign_code = str(sign or "").strip()
+        if sign_code in {"4", "5"} and value > 0:
+            return -value
+        return value
 
     def _activity_item(self, item: dict[str, Any]) -> KisOrderActivityItem:
         quantity = self._decimal(item.get("ord_qty")) or Decimal("0")
@@ -1276,6 +1579,8 @@ class KisClient:
 
     @staticmethod
     def _as_list(value: Any) -> list[dict[str, Any]]:
+        if isinstance(value, dict):
+            return [value]
         if not isinstance(value, list):
             return []
         return [item for item in value if isinstance(item, dict)]

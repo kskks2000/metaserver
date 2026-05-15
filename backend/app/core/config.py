@@ -64,6 +64,12 @@ class Settings(BaseSettings):
     kis_live_trading_enabled: bool = False
     kis_regular_session_only: bool = True
 
+    upbit_access_key: str | None = None
+    upbit_secret_key: str | None = None
+    upbit_base_url: str = "https://api.upbit.com"
+    upbit_timeout_seconds: float = 10.0
+    upbit_live_trading_enabled: bool = False
+
     @property
     def use_local_user_store(self) -> bool:
         return self.app_env == "local" and not self.database_url

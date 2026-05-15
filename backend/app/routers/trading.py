@@ -24,6 +24,7 @@ from app.schemas.trading import (
     KisConnectionStatusResponse,
     KisOrderActivityResponse,
     KisPortfolioResponse,
+    MarketStatusResponse,
     OverseasStockOrderRequest,
     OverseasStockOrderResponse,
     OverseasStockQuoteResponse,
@@ -31,6 +32,15 @@ from app.schemas.trading import (
     TradingConsentCreate,
     TradingConsentStatusResponse,
     TradingConsentType,
+    TradingOrderActivityResponse,
+    UpbitConnectionStatusResponse,
+    UpbitMarketSearchResponse,
+    UpbitOrderChanceResponse,
+    UpbitOrderRequest,
+    UpbitOrderResponse,
+    UpbitOrderbookResponse,
+    UpbitPortfolioResponse,
+    UpbitTickerResponse,
 )
 from app.services.krx_directory import krx_stock_directory
 from app.services.kis import (
@@ -38,6 +48,12 @@ from app.services.kis import (
     KisConfigurationError,
     KisOrderValidationError,
     get_kis_client,
+)
+from app.services.upbit import (
+    UpbitApiError,
+    UpbitConfigurationError,
+    UpbitOrderValidationError,
+    get_upbit_client,
 )
 
 
@@ -136,9 +152,52 @@ def _raise_kis_error(exc: Exception) -> None:
     raise exc
 
 
+def _raise_upbit_error(exc: Exception) -> None:
+    if isinstance(exc, UpbitConfigurationError):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+    if isinstance(exc, UpbitOrderValidationError):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
+
+    if isinstance(exc, UpbitApiError):
+        logger.warning(
+            "Upbit API error: status=%s name=%s message=%s payload=%s",
+            exc.status_code,
+            exc.error_name,
+            str(exc),
+            exc.payload,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "message": str(exc),
+                "status_code": exc.status_code,
+                "error_name": exc.error_name,
+                "payload": exc.payload,
+            },
+        ) from exc
+
+    raise exc
+
+
+def _order_activity_sort_key(item: object) -> str:
+    order_date = getattr(item, "order_date", None) or ""
+    order_time = getattr(item, "order_time", None) or ""
+    order_no = getattr(item, "order_no", None) or ""
+    return f"{order_date}{order_time}{order_no}"
+
+
 @router.get("/kis/status", response_model=KisConnectionStatusResponse)
 def kis_status() -> KisConnectionStatusResponse:
     return get_kis_client().status()
+
+
+@router.get("/upbit/status", response_model=UpbitConnectionStatusResponse)
+def upbit_status() -> UpbitConnectionStatusResponse:
+    return get_upbit_client().status()
 
 
 @router.get(
@@ -253,6 +312,48 @@ def overseas_stock_quote(
         raise
 
 
+@router.get(
+    "/upbit/markets/search",
+    response_model=UpbitMarketSearchResponse,
+)
+def search_upbit_markets(
+    q: str = Query(default="", max_length=80),
+    limit: int = Query(default=50, ge=1, le=100),
+) -> UpbitMarketSearchResponse:
+    try:
+        return get_upbit_client().search_markets(q, limit=limit)
+    except UpbitApiError as exc:
+        _raise_upbit_error(exc)
+        raise
+
+
+@router.get(
+    "/upbit/markets/{market}/ticker",
+    response_model=UpbitTickerResponse,
+)
+def upbit_ticker(market: str) -> UpbitTickerResponse:
+    try:
+        return get_upbit_client().ticker(market)
+    except UpbitApiError as exc:
+        _raise_upbit_error(exc)
+        raise
+
+
+@router.get(
+    "/upbit/markets/{market}/orderbook",
+    response_model=UpbitOrderbookResponse,
+)
+def upbit_orderbook(
+    market: str,
+    count: int = Query(default=15, ge=1, le=30),
+) -> UpbitOrderbookResponse:
+    try:
+        return get_upbit_client().orderbook(market, count=count)
+    except UpbitApiError as exc:
+        _raise_upbit_error(exc)
+        raise
+
+
 @router.get("/kis/portfolio", response_model=KisPortfolioResponse)
 def kis_portfolio(
     principal: FirebasePrincipal = Depends(get_current_principal),
@@ -261,6 +362,113 @@ def kis_portfolio(
     del principal
     try:
         return get_kis_client().portfolio(environment=environment)
+    except (KisConfigurationError, KisApiError) as exc:
+        _raise_kis_error(exc)
+        raise
+
+
+@router.get("/upbit/portfolio", response_model=UpbitPortfolioResponse)
+def upbit_portfolio(
+    principal: FirebasePrincipal = Depends(get_current_principal),
+) -> UpbitPortfolioResponse:
+    del principal
+    try:
+        return get_upbit_client().portfolio()
+    except (UpbitConfigurationError, UpbitApiError) as exc:
+        _raise_upbit_error(exc)
+        raise
+
+
+@router.get("/upbit/orders/chance", response_model=UpbitOrderChanceResponse)
+def upbit_order_chance(
+    market: str = Query(default="KRW-BTC", min_length=5, max_length=20),
+    principal: FirebasePrincipal = Depends(get_current_principal),
+) -> UpbitOrderChanceResponse:
+    del principal
+    try:
+        return get_upbit_client().order_chance(market)
+    except (UpbitConfigurationError, UpbitApiError) as exc:
+        _raise_upbit_error(exc)
+        raise
+
+
+@router.get("/upbit/order-activity", response_model=TradingOrderActivityResponse)
+def upbit_order_activity(
+    principal: FirebasePrincipal = Depends(get_current_principal),
+    days: int = Query(default=1, ge=1, le=7),
+    market: str = Query(default="", max_length=20),
+) -> TradingOrderActivityResponse:
+    del principal
+    try:
+        return get_upbit_client().order_activity(days=days, market=market)
+    except (UpbitConfigurationError, UpbitApiError) as exc:
+        _raise_upbit_error(exc)
+        raise
+
+
+@router.get("/order-activity", response_model=TradingOrderActivityResponse)
+def order_activity(
+    principal: FirebasePrincipal = Depends(get_current_principal),
+    environment: BrokerEnvironment | None = None,
+    days: int = Query(default=1, ge=1, le=90),
+    symbol: str = Query(default="", max_length=20),
+) -> TradingOrderActivityResponse:
+    del principal
+    end = datetime.now(ZoneInfo("Asia/Seoul")).date()
+    start = end - timedelta(days=days - 1)
+    open_orders = []
+    executions = []
+    errors: list[dict[str, str]] = []
+    first_error: tuple[str, Exception] | None = None
+
+    try:
+        kis_activity = get_kis_client().order_activity(
+            environment=environment,
+            start_date=start,
+            end_date=end,
+            symbol=symbol,
+        )
+        open_orders.extend(kis_activity.open_orders)
+        executions.extend(kis_activity.executions)
+    except (KisConfigurationError, KisApiError) as exc:
+        first_error = first_error or ("kis", exc)
+        errors.append({"broker": "kis", "message": str(exc)})
+
+    try:
+        upbit_activity = get_upbit_client().order_activity(days=days, market=symbol)
+        open_orders.extend(upbit_activity.open_orders)
+        executions.extend(upbit_activity.executions)
+    except (UpbitConfigurationError, UpbitApiError) as exc:
+        first_error = first_error or ("upbit", exc)
+        errors.append({"broker": "upbit", "message": str(exc)})
+
+    if not open_orders and not executions and first_error is not None:
+        broker, exc = first_error
+        if broker == "kis":
+            _raise_kis_error(exc)
+        else:
+            _raise_upbit_error(exc)
+        raise exc
+
+    open_orders.sort(key=_order_activity_sort_key, reverse=True)
+    executions.sort(key=_order_activity_sort_key, reverse=True)
+    return TradingOrderActivityResponse(
+        environment="mixed",
+        account_no_masked="",
+        start_date=start,
+        end_date=end,
+        open_orders=open_orders,
+        executions=executions,
+        raw_summary={"errors": errors} if errors else {},
+    )
+
+
+@router.get("/market-status", response_model=MarketStatusResponse)
+def market_status(
+    environment: BrokerEnvironment | None = None,
+) -> MarketStatusResponse:
+    try:
+        return get_kis_client().market_status(environment=environment)
     except (KisConfigurationError, KisApiError) as exc:
         _raise_kis_error(exc)
         raise
@@ -329,4 +537,25 @@ def place_overseas_stock_order(
         return get_kis_client().place_overseas_stock_order(payload)
     except (KisConfigurationError, KisOrderValidationError, KisApiError) as exc:
         _raise_kis_error(exc)
+        raise
+
+
+@router.post(
+    "/upbit/orders",
+    response_model=UpbitOrderResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def place_upbit_order(
+    payload: UpbitOrderRequest,
+    principal: FirebasePrincipal = Depends(get_current_principal),
+) -> UpbitOrderResponse:
+    _require_database()
+    with db_connection() as conn:
+        user_id = _current_user_id(conn, principal)
+        _ensure_risk_notice_agreed(conn, user_id)
+    payload.market = payload.market.upper()
+    try:
+        return get_upbit_client().place_order(payload)
+    except (UpbitConfigurationError, UpbitOrderValidationError, UpbitApiError) as exc:
+        _raise_upbit_error(exc)
         raise

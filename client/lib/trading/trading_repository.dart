@@ -16,14 +16,28 @@ class TradingRepository {
     return KisConnectionStatus.fromJson(data);
   }
 
+  Future<UpbitConnectionStatus> loadUpbitStatus() async {
+    final data = await _apiClient.getJson('/trading/upbit/status');
+    return UpbitConnectionStatus.fromJson(data);
+  }
+
   Future<KisPortfolio> loadKisPortfolio() async {
     final data = await _apiClient.getJson('/trading/kis/portfolio');
     return KisPortfolio.fromJson(data);
   }
 
+  Future<UpbitPortfolio> loadUpbitPortfolio() async {
+    final data = await _apiClient.getJson('/trading/upbit/portfolio');
+    return UpbitPortfolio.fromJson(data);
+  }
+
+  Future<KisMarketStatus> loadMarketStatus() async {
+    final data = await _apiClient.getJson('/trading/market-status');
+    return KisMarketStatus.fromJson(data);
+  }
+
   Future<KisOrderActivity> loadKisOrderActivity({int days = 1}) async {
-    final data =
-        await _apiClient.getJson('/trading/kis/order-activity?days=$days');
+    final data = await _apiClient.getJson('/trading/order-activity?days=$days');
     return KisOrderActivity.fromJson(data);
   }
 
@@ -47,6 +61,27 @@ class TradingRepository {
     return DomesticStockQuote.fromJson(data);
   }
 
+  Future<DomesticStockQuote> loadUpbitQuote(String market) async {
+    final data = await _apiClient.getJson(
+      '/trading/upbit/markets/${Uri.encodeComponent(market)}/ticker',
+    );
+    return DomesticStockQuote.fromJson(data);
+  }
+
+  Future<UpbitOrderbook> loadUpbitOrderbook(String market) async {
+    final data = await _apiClient.getJson(
+      '/trading/upbit/markets/${Uri.encodeComponent(market)}/orderbook?count=10',
+    );
+    return UpbitOrderbook.fromJson(data);
+  }
+
+  Future<UpbitOrderChance> loadUpbitOrderChance(String market) async {
+    final data = await _apiClient.getJson(
+      '/trading/upbit/orders/chance?market=${Uri.encodeQueryComponent(market)}',
+    );
+    return UpbitOrderChance.fromJson(data);
+  }
+
   Future<List<DomesticStockSearchResult>> searchDomesticStocks(
     String query, {
     int limit = 50,
@@ -62,6 +97,26 @@ class TradingRepository {
           DomesticStockSearchResult.fromJson(item)
         else if (item is Map)
           DomesticStockSearchResult.fromJson(Map<String, dynamic>.from(item)),
+    ];
+  }
+
+  Future<List<DomesticStockSearchResult>> searchUpbitMarkets(
+    String query, {
+    int limit = 50,
+  }) async {
+    final data = await _apiClient.getJson(
+      '/trading/upbit/markets/search?q=${Uri.encodeQueryComponent(query)}&limit=$limit',
+    );
+    final rawItems = data['items'];
+    if (rawItems is! List) return const [];
+    return [
+      for (final item in rawItems)
+        if (item is Map<String, dynamic>)
+          DomesticStockSearchResult.fromUpbitJson(item)
+        else if (item is Map)
+          DomesticStockSearchResult.fromUpbitJson(
+            Map<String, dynamic>.from(item),
+          ),
     ];
   }
 
@@ -83,6 +138,16 @@ class TradingRepository {
       data: draft.toJson(),
     );
     return DomesticStockOrderResult.fromJson(data);
+  }
+
+  Future<DomesticStockOrderResult> placeUpbitOrder(
+    UpbitOrderDraft draft,
+  ) async {
+    final data = await _apiClient.postJson(
+      '/trading/upbit/orders',
+      data: draft.toJson(),
+    );
+    return DomesticStockOrderResult.fromUpbitJson(data);
   }
 
   Future<TradingConsentStatus> loadTradingRiskNoticeConsent() async {
@@ -128,6 +193,8 @@ class KisConnectionStatus {
     required this.configured,
     required this.defaultEnvironment,
     required this.liveTradingEnabled,
+    required this.orderProtocol,
+    required this.regularSessionOnly,
     this.accountNoMasked,
     this.productCode,
     this.message,
@@ -136,6 +203,8 @@ class KisConnectionStatus {
   final bool configured;
   final String defaultEnvironment;
   final bool liveTradingEnabled;
+  final String orderProtocol;
+  final bool regularSessionOnly;
   final String? accountNoMasked;
   final String? productCode;
   final String? message;
@@ -145,8 +214,33 @@ class KisConnectionStatus {
       configured: json['configured'] == true,
       defaultEnvironment: json['default_environment']?.toString() ?? 'paper',
       liveTradingEnabled: json['live_trading_enabled'] == true,
+      orderProtocol: json['order_protocol']?.toString() ?? 'modern',
+      regularSessionOnly: json['regular_session_only'] != false,
       accountNoMasked: json['account_no_masked']?.toString(),
       productCode: json['product_code']?.toString(),
+      message: json['message']?.toString(),
+    );
+  }
+}
+
+class UpbitConnectionStatus {
+  const UpbitConnectionStatus({
+    required this.configured,
+    required this.liveTradingEnabled,
+    this.accessKeyMasked,
+    this.message,
+  });
+
+  final bool configured;
+  final bool liveTradingEnabled;
+  final String? accessKeyMasked;
+  final String? message;
+
+  factory UpbitConnectionStatus.fromJson(Map<String, dynamic> json) {
+    return UpbitConnectionStatus(
+      configured: json['configured'] == true,
+      liveTradingEnabled: json['live_trading_enabled'] == true,
+      accessKeyMasked: json['access_key_masked']?.toString(),
       message: json['message']?.toString(),
     );
   }
@@ -195,11 +289,107 @@ class KisPortfolio {
   }
 }
 
+class UpbitPortfolio {
+  const UpbitPortfolio({
+    required this.accountLabel,
+    required this.holdings,
+    required this.totalPurchaseAmount,
+    required this.totalEvaluationAmount,
+    required this.totalProfitLoss,
+    required this.profitLossRate,
+    required this.orderableCash,
+    required this.lockedCash,
+  });
+
+  final String accountLabel;
+  final List<UpbitHolding> holdings;
+  final double totalPurchaseAmount;
+  final double totalEvaluationAmount;
+  final double totalProfitLoss;
+  final double profitLossRate;
+  final double orderableCash;
+  final double lockedCash;
+
+  factory UpbitPortfolio.fromJson(Map<String, dynamic> json) {
+    final rawHoldings = json['holdings'];
+    return UpbitPortfolio(
+      accountLabel: json['account_label']?.toString() ?? 'Upbit',
+      holdings: [
+        if (rawHoldings is List)
+          for (final item in rawHoldings)
+            if (item is Map<String, dynamic>)
+              UpbitHolding.fromJson(item)
+            else if (item is Map)
+              UpbitHolding.fromJson(Map<String, dynamic>.from(item)),
+      ],
+      totalPurchaseAmount: _asDouble(json['total_purchase_amount']) ?? 0,
+      totalEvaluationAmount: _asDouble(json['total_evaluation_amount']) ?? 0,
+      totalProfitLoss: _asDouble(json['total_profit_loss']) ?? 0,
+      profitLossRate: _asDouble(json['profit_loss_rate']) ?? 0,
+      orderableCash: _asDouble(json['orderable_cash']) ?? 0,
+      lockedCash: _asDouble(json['locked_cash']) ?? 0,
+    );
+  }
+}
+
+class UpbitHolding {
+  const UpbitHolding({
+    required this.market,
+    required this.symbol,
+    required this.name,
+    required this.quantity,
+    required this.lockedQuantity,
+    required this.orderableQuantity,
+    required this.averagePrice,
+    required this.currentPrice,
+    required this.purchaseAmount,
+    required this.evaluationAmount,
+    required this.profitLoss,
+    required this.profitLossRate,
+    required this.currency,
+  });
+
+  final String market;
+  final String symbol;
+  final String name;
+  final double quantity;
+  final double lockedQuantity;
+  final double orderableQuantity;
+  final double averagePrice;
+  final double currentPrice;
+  final double purchaseAmount;
+  final double evaluationAmount;
+  final double profitLoss;
+  final double profitLossRate;
+  final String currency;
+
+  factory UpbitHolding.fromJson(Map<String, dynamic> json) {
+    return UpbitHolding(
+      market: json['market']?.toString() ?? '',
+      symbol: json['symbol']?.toString() ?? '',
+      name: json['name']?.toString() ?? '',
+      quantity: _asDouble(json['quantity']) ?? 0,
+      lockedQuantity: _asDouble(json['locked_quantity']) ?? 0,
+      orderableQuantity: _asDouble(json['orderable_quantity']) ?? 0,
+      averagePrice: _asDouble(json['average_price']) ?? 0,
+      currentPrice: _asDouble(json['current_price']) ?? 0,
+      purchaseAmount: _asDouble(json['purchase_amount']) ?? 0,
+      evaluationAmount: _asDouble(json['evaluation_amount']) ?? 0,
+      profitLoss: _asDouble(json['profit_loss']) ?? 0,
+      profitLossRate: _asDouble(json['profit_loss_rate']) ?? 0,
+      currency: json['currency']?.toString() ?? 'KRW',
+    );
+  }
+}
+
 class KisHolding {
   const KisHolding({
     required this.symbol,
     required this.name,
     required this.quantity,
+    required this.assetClass,
+    required this.market,
+    required this.currency,
     required this.orderableQuantity,
     required this.averagePrice,
     required this.currentPrice,
@@ -212,6 +402,9 @@ class KisHolding {
   final String symbol;
   final String name;
   final double quantity;
+  final String assetClass;
+  final String market;
+  final String currency;
   final double orderableQuantity;
   final double averagePrice;
   final double currentPrice;
@@ -225,6 +418,9 @@ class KisHolding {
       symbol: json['symbol']?.toString() ?? '',
       name: json['name']?.toString() ?? '',
       quantity: _asDouble(json['quantity']) ?? 0,
+      assetClass: json['asset_class']?.toString() ?? 'domestic_stock',
+      market: json['market']?.toString() ?? 'KOSPI',
+      currency: json['currency']?.toString() ?? 'KRW',
       orderableQuantity: _asDouble(json['orderable_quantity']) ?? 0,
       averagePrice: _asDouble(json['average_price']) ?? 0,
       currentPrice: _asDouble(json['current_price']) ?? 0,
@@ -232,6 +428,54 @@ class KisHolding {
       evaluationAmount: _asDouble(json['evaluation_amount']) ?? 0,
       profitLoss: _asDouble(json['profit_loss']) ?? 0,
       profitLossRate: _asDouble(json['profit_loss_rate']) ?? 0,
+    );
+  }
+}
+
+class KisMarketStatus {
+  const KisMarketStatus({
+    required this.environment,
+    required this.items,
+  });
+
+  final String environment;
+  final List<KisMarketStatusItem> items;
+
+  factory KisMarketStatus.fromJson(Map<String, dynamic> json) {
+    final rawItems = json['items'];
+    return KisMarketStatus(
+      environment: json['environment']?.toString() ?? 'paper',
+      items: [
+        if (rawItems is List)
+          for (final item in rawItems)
+            if (item is Map<String, dynamic>)
+              KisMarketStatusItem.fromJson(item)
+            else if (item is Map)
+              KisMarketStatusItem.fromJson(Map<String, dynamic>.from(item)),
+      ],
+    );
+  }
+}
+
+class KisMarketStatusItem {
+  const KisMarketStatusItem({
+    required this.label,
+    required this.value,
+    required this.change,
+    required this.changeRate,
+  });
+
+  final String label;
+  final double? value;
+  final double? change;
+  final double? changeRate;
+
+  factory KisMarketStatusItem.fromJson(Map<String, dynamic> json) {
+    return KisMarketStatusItem(
+      label: json['label']?.toString() ?? '',
+      value: _asDouble(json['value']),
+      change: _asDouble(json['change']),
+      changeRate: _asDouble(json['change_rate']),
     );
   }
 }
@@ -261,6 +505,10 @@ class KisOrderActivity {
 
 class KisOrderActivityItem {
   const KisOrderActivityItem({
+    required this.broker,
+    required this.assetClass,
+    required this.market,
+    required this.currency,
     required this.symbol,
     required this.name,
     required this.side,
@@ -276,13 +524,17 @@ class KisOrderActivityItem {
     this.orderKindName,
   });
 
+  final String broker;
+  final String assetClass;
+  final String market;
+  final String currency;
   final String symbol;
   final String name;
   final String side;
   final String status;
-  final int quantity;
-  final int filledQuantity;
-  final int remainingQuantity;
+  final double quantity;
+  final double filledQuantity;
+  final double remainingQuantity;
   final double price;
   final double averagePrice;
   final String? orderDate;
@@ -291,16 +543,21 @@ class KisOrderActivityItem {
   final String? orderKindName;
 
   bool get isBuy => side == 'buy';
+  bool get isCrypto => assetClass == 'crypto' || broker.toUpperCase() == 'UPBIT';
 
   factory KisOrderActivityItem.fromJson(Map<String, dynamic> json) {
     return KisOrderActivityItem(
+      broker: json['broker']?.toString() ?? 'kis',
+      assetClass: json['asset_class']?.toString() ?? 'domestic_stock',
+      market: json['market']?.toString() ?? '',
+      currency: json['currency']?.toString() ?? 'KRW',
       symbol: json['symbol']?.toString() ?? '',
       name: json['name']?.toString() ?? '',
       side: json['side']?.toString() ?? '',
       status: json['status']?.toString() ?? '',
-      quantity: _asInt(json['quantity']),
-      filledQuantity: _asInt(json['filled_quantity']),
-      remainingQuantity: _asInt(json['remaining_quantity']),
+      quantity: _asDouble(json['quantity']) ?? 0,
+      filledQuantity: _asDouble(json['filled_quantity']) ?? 0,
+      remainingQuantity: _asDouble(json['remaining_quantity']) ?? 0,
       price: _asDouble(json['price']) ?? 0,
       averagePrice: _asDouble(json['average_price']) ?? 0,
       orderDate: json['order_date']?.toString(),
@@ -344,6 +601,16 @@ class DomesticStockSearchResult {
       name: json['name']?.toString() ?? '',
       sector: json['sector']?.toString() ?? '상장종목',
       standardCode: json['standard_code']?.toString(),
+    );
+  }
+
+  factory DomesticStockSearchResult.fromUpbitJson(Map<String, dynamic> json) {
+    return DomesticStockSearchResult(
+      market: 'UPBIT',
+      symbol: json['market']?.toString() ?? '',
+      name: json['korean_name']?.toString() ?? json['market']?.toString() ?? '',
+      sector: json['english_name']?.toString() ?? 'Upbit KRW',
+      standardCode: json['market_warning']?.toString(),
     );
   }
 }
@@ -453,6 +720,32 @@ class OverseasStockOrderDraft {
   }
 }
 
+class UpbitOrderDraft {
+  const UpbitOrderDraft({
+    required this.side,
+    required this.market,
+    required this.orderKind,
+    this.quantity,
+    this.price,
+  });
+
+  final String side;
+  final String market;
+  final String orderKind;
+  final num? quantity;
+  final num? price;
+
+  Map<String, dynamic> toJson() {
+    return {
+      'side': side,
+      'market': market,
+      'order_kind': orderKind,
+      if (quantity != null) 'quantity': quantity,
+      if (price != null) 'price': price,
+    };
+  }
+}
+
 class DomesticStockOrderResult {
   const DomesticStockOrderResult({
     required this.symbol,
@@ -484,6 +777,96 @@ class DomesticStockOrderResult {
       brokerOrderNo: json['broker_order_no']?.toString(),
       brokerOrderTime: json['broker_order_time']?.toString(),
       kisMessage: json['kis_message']?.toString(),
+    );
+  }
+
+  factory DomesticStockOrderResult.fromUpbitJson(Map<String, dynamic> json) {
+    return DomesticStockOrderResult(
+      symbol: json['market']?.toString() ?? '',
+      side: json['side']?.toString() ?? '',
+      quantity: _asInt(json['quantity']),
+      orderDivisionCode: json['order_kind']?.toString() ?? '',
+      trId: 'UPBIT',
+      brokerOrderNo: json['broker_order_no']?.toString(),
+      brokerOrderTime: json['broker_order_time']?.toString(),
+      kisMessage: json['broker_state']?.toString(),
+    );
+  }
+}
+
+class UpbitOrderbook {
+  const UpbitOrderbook({
+    required this.market,
+    required this.units,
+  });
+
+  final String market;
+  final List<UpbitOrderbookUnit> units;
+
+  factory UpbitOrderbook.fromJson(Map<String, dynamic> json) {
+    final rawUnits = json['units'];
+    return UpbitOrderbook(
+      market: json['market']?.toString() ?? '',
+      units: [
+        if (rawUnits is List)
+          for (final item in rawUnits)
+            if (item is Map<String, dynamic>)
+              UpbitOrderbookUnit.fromJson(item)
+            else if (item is Map)
+              UpbitOrderbookUnit.fromJson(Map<String, dynamic>.from(item)),
+      ],
+    );
+  }
+}
+
+class UpbitOrderbookUnit {
+  const UpbitOrderbookUnit({
+    required this.askPrice,
+    required this.bidPrice,
+    required this.askSize,
+    required this.bidSize,
+  });
+
+  final double askPrice;
+  final double bidPrice;
+  final double askSize;
+  final double bidSize;
+
+  factory UpbitOrderbookUnit.fromJson(Map<String, dynamic> json) {
+    return UpbitOrderbookUnit(
+      askPrice: _asDouble(json['ask_price']) ?? 0,
+      bidPrice: _asDouble(json['bid_price']) ?? 0,
+      askSize: _asDouble(json['ask_size']) ?? 0,
+      bidSize: _asDouble(json['bid_size']) ?? 0,
+    );
+  }
+}
+
+class UpbitOrderChance {
+  const UpbitOrderChance({
+    required this.market,
+    required this.bidFee,
+    required this.askFee,
+    required this.bidAccountBalance,
+    required this.askAccountBalance,
+    required this.minTotal,
+  });
+
+  final String market;
+  final double bidFee;
+  final double askFee;
+  final double bidAccountBalance;
+  final double askAccountBalance;
+  final double minTotal;
+
+  factory UpbitOrderChance.fromJson(Map<String, dynamic> json) {
+    return UpbitOrderChance(
+      market: json['market']?.toString() ?? '',
+      bidFee: _asDouble(json['bid_fee']) ?? 0,
+      askFee: _asDouble(json['ask_fee']) ?? 0,
+      bidAccountBalance: _asDouble(json['bid_account_balance']) ?? 0,
+      askAccountBalance: _asDouble(json['ask_account_balance']) ?? 0,
+      minTotal: _asDouble(json['min_total']) ?? 5000,
     );
   }
 }

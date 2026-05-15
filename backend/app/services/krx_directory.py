@@ -61,6 +61,15 @@ class KrxStockDirectory:
         scored.sort(key=lambda entry: (entry[0], entry[1]))
         return [entry[2] for entry in scored[:limit]]
 
+    def by_symbol(self, symbol: str) -> StockDirectoryItem | None:
+        normalized = symbol.strip()
+        if not normalized:
+            return None
+        for item in self._load_items():
+            if item.symbol == normalized:
+                return item
+        return None
+
     def _items_for_empty_query(self, limit: int) -> list[StockDirectoryItem]:
         preferred = ["005930", "000660", "035420", "247540", "005380", "035720"]
         items = self._load_items()

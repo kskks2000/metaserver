@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field, model_validator
 
 class BrokerCode(str, Enum):
     kis = "kis"
+    upbit = "upbit"
 
 
 class BrokerEnvironment(str, Enum):
@@ -313,8 +314,17 @@ class KisConnectionStatusResponse(BaseModel):
     default_environment: BrokerEnvironment
     live_trading_enabled: bool
     order_protocol: str
+    regular_session_only: bool
     account_no_masked: str | None = None
     product_code: str | None = None
+    base_url: str | None = None
+    message: str | None = None
+
+
+class UpbitConnectionStatusResponse(BaseModel):
+    configured: bool
+    live_trading_enabled: bool
+    access_key_masked: str | None = None
     base_url: str | None = None
     message: str | None = None
 
@@ -323,6 +333,9 @@ class KisPortfolioHolding(BaseModel):
     symbol: str
     name: str
     quantity: Decimal
+    asset_class: AssetClass = AssetClass.domestic_stock
+    market: str = "KOSPI"
+    currency: str = "KRW"
     orderable_quantity: Decimal | None = None
     average_price: Decimal | None = None
     current_price: Decimal | None = None
@@ -343,6 +356,19 @@ class KisPortfolioResponse(BaseModel):
     profit_loss_rate: Decimal | None = None
     orderable_cash: Decimal | None = None
     raw_summary: dict[str, Any] = Field(default_factory=dict)
+
+
+class MarketStatusItem(BaseModel):
+    label: str
+    value: Decimal | None = None
+    change: Decimal | None = None
+    change_rate: Decimal | None = None
+    raw_output: dict[str, Any] = Field(default_factory=dict)
+
+
+class MarketStatusResponse(BaseModel):
+    environment: BrokerEnvironment
+    items: list[MarketStatusItem]
 
 
 class DomesticStockQuoteResponse(BaseModel):
@@ -377,6 +403,141 @@ class OverseasStockQuoteResponse(BaseModel):
     low_price: Decimal | None = None
     accumulated_volume: Decimal | None = None
     accumulated_trade_amount: Decimal | None = None
+    raw_output: dict[str, Any] = Field(default_factory=dict)
+
+
+class UpbitMarketItem(BaseModel):
+    market: str
+    korean_name: str
+    english_name: str | None = None
+    market_warning: str | None = None
+    raw_output: dict[str, Any] = Field(default_factory=dict)
+
+
+class UpbitMarketSearchResponse(BaseModel):
+    query: str
+    items: list[UpbitMarketItem]
+
+
+class UpbitTickerResponse(BaseModel):
+    market: str
+    symbol: str
+    korean_name: str | None = None
+    price: Decimal | None = None
+    previous_close: Decimal | None = None
+    change_price: Decimal | None = None
+    change_rate: Decimal | None = None
+    open_price: Decimal | None = None
+    high_price: Decimal | None = None
+    low_price: Decimal | None = None
+    accumulated_volume: Decimal | None = None
+    accumulated_trade_amount: Decimal | None = None
+    quote_currency: str = "KRW"
+    raw_output: dict[str, Any] = Field(default_factory=dict)
+
+
+class UpbitOrderbookUnit(BaseModel):
+    ask_price: Decimal | None = None
+    bid_price: Decimal | None = None
+    ask_size: Decimal | None = None
+    bid_size: Decimal | None = None
+
+
+class UpbitOrderbookResponse(BaseModel):
+    market: str
+    timestamp: int | None = None
+    total_ask_size: Decimal | None = None
+    total_bid_size: Decimal | None = None
+    units: list[UpbitOrderbookUnit]
+    raw_output: dict[str, Any] = Field(default_factory=dict)
+
+
+class UpbitPortfolioHolding(BaseModel):
+    market: str
+    symbol: str
+    name: str
+    quantity: Decimal
+    locked_quantity: Decimal = Decimal("0")
+    orderable_quantity: Decimal | None = None
+    average_price: Decimal | None = None
+    current_price: Decimal | None = None
+    purchase_amount: Decimal | None = None
+    evaluation_amount: Decimal | None = None
+    profit_loss: Decimal | None = None
+    profit_loss_rate: Decimal | None = None
+    currency: str = "KRW"
+    raw_output: dict[str, Any] = Field(default_factory=dict)
+
+
+class UpbitPortfolioResponse(BaseModel):
+    account_label: str = "Upbit"
+    holdings: list[UpbitPortfolioHolding]
+    total_purchase_amount: Decimal | None = None
+    total_evaluation_amount: Decimal | None = None
+    total_profit_loss: Decimal | None = None
+    profit_loss_rate: Decimal | None = None
+    orderable_cash: Decimal | None = None
+    locked_cash: Decimal | None = None
+    raw_accounts: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class UpbitOrderChanceResponse(BaseModel):
+    market: str
+    bid_fee: Decimal | None = None
+    ask_fee: Decimal | None = None
+    maker_bid_fee: Decimal | None = None
+    maker_ask_fee: Decimal | None = None
+    bid_account_balance: Decimal | None = None
+    bid_account_locked: Decimal | None = None
+    ask_account_balance: Decimal | None = None
+    ask_account_locked: Decimal | None = None
+    min_total: Decimal | None = None
+    max_total: Decimal | None = None
+    bid_types: list[str] = Field(default_factory=list)
+    ask_types: list[str] = Field(default_factory=list)
+    raw_output: dict[str, Any] = Field(default_factory=dict)
+
+
+class UpbitOrderRequest(BaseModel):
+    side: OrderSide
+    market: str = Field(min_length=5, max_length=20)
+    quantity: Decimal | None = Field(default=None, gt=0)
+    order_kind: OrderKind = OrderKind.limit
+    price: Decimal | None = Field(default=None, ge=0)
+    time_in_force: str | None = Field(default=None, max_length=20)
+    client_order_id: str | None = Field(default=None, max_length=32)
+    dry_run: bool = False
+
+    @model_validator(mode="after")
+    def validate_upbit_order(self):
+        if self.order_kind == OrderKind.limit:
+            if self.quantity is None or self.quantity <= 0:
+                raise ValueError("Limit orders require a positive quantity.")
+            if self.price is None or self.price <= 0:
+                raise ValueError("Limit orders require a positive price.")
+        elif self.order_kind == OrderKind.market:
+            if self.side == OrderSide.buy:
+                if self.price is None or self.price <= 0:
+                    raise ValueError("Market buy orders require a positive total price.")
+            else:
+                if self.quantity is None or self.quantity <= 0:
+                    raise ValueError("Market sell orders require a positive quantity.")
+        else:
+            raise ValueError("Upbit orders currently support limit or market only.")
+        return self
+
+
+class UpbitOrderResponse(BaseModel):
+    market: str
+    side: OrderSide
+    order_kind: OrderKind
+    quantity: Decimal | None = None
+    price: Decimal | None = None
+    dry_run: bool = False
+    broker_order_no: str | None = None
+    broker_order_time: str | None = None
+    broker_state: str | None = None
+    request_payload: dict[str, Any] = Field(default_factory=dict)
     raw_output: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -478,6 +639,10 @@ class OverseasStockOrderResponse(BaseModel):
 
 
 class KisOrderActivityItem(BaseModel):
+    broker: BrokerCode = BrokerCode.kis
+    asset_class: AssetClass = AssetClass.domestic_stock
+    market: str = "KOSPI"
+    currency: str = "KRW"
     order_date: str | None = None
     order_time: str | None = None
     order_no: str | None = None
@@ -503,6 +668,16 @@ class KisOrderActivityItem(BaseModel):
 class KisOrderActivityResponse(BaseModel):
     environment: BrokerEnvironment
     account_no_masked: str
+    start_date: date
+    end_date: date
+    open_orders: list[KisOrderActivityItem]
+    executions: list[KisOrderActivityItem]
+    raw_summary: dict[str, Any] = Field(default_factory=dict)
+
+
+class TradingOrderActivityResponse(BaseModel):
+    environment: str = "mixed"
+    account_no_masked: str = ""
     start_date: date
     end_date: date
     open_orders: list[KisOrderActivityItem]

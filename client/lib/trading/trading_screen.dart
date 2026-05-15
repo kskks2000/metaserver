@@ -39,15 +39,30 @@ extension _AssetClassMeta on _AssetClass {
   bool get usesDomesticKisApi => this == _AssetClass.domesticStock;
 
   bool get supportsKisQuote =>
-      this == _AssetClass.domesticStock || this == _AssetClass.overseasStock;
+      this == _AssetClass.domesticStock ||
+      this == _AssetClass.overseasStock ||
+      this == _AssetClass.crypto;
 
   bool get supportsKisOrder =>
-      this == _AssetClass.domesticStock || this == _AssetClass.overseasStock;
+      this == _AssetClass.domesticStock ||
+      this == _AssetClass.overseasStock ||
+      this == _AssetClass.crypto;
 
-  bool get usesDecimalPrice => this == _AssetClass.overseasStock;
+  bool get usesDecimalPrice =>
+      this == _AssetClass.overseasStock || this == _AssetClass.crypto;
+
+  bool get usesDecimalQuantity => this == _AssetClass.crypto;
 }
 
 _AssetClass _assetClassFromStorage(Object? value) {
+  return switch (value?.toString()) {
+    'overseas_stock' => _AssetClass.overseasStock,
+    'crypto' => _AssetClass.crypto,
+    _ => _AssetClass.domesticStock,
+  };
+}
+
+_AssetClass _assetClassFromApi(Object? value) {
   return switch (value?.toString()) {
     'overseas_stock' => _AssetClass.overseasStock,
     'crypto' => _AssetClass.crypto,
@@ -140,8 +155,14 @@ class _TradingScreenState extends ConsumerState<TradingScreen> {
   final Map<_AssetClass, String> _selectedGroupIdsByAssetClass = {};
   late Future<KisPortfolio> _portfolioFuture;
   KisPortfolio? _cachedPortfolio;
+  late Future<UpbitPortfolio> _upbitPortfolioFuture;
+  UpbitPortfolio? _cachedUpbitPortfolio;
   late Future<KisConnectionStatus> _kisStatusFuture;
   KisConnectionStatus? _cachedKisStatus;
+  late Future<UpbitConnectionStatus> _upbitStatusFuture;
+  UpbitConnectionStatus? _cachedUpbitStatus;
+  late Future<KisMarketStatus> _marketStatusFuture;
+  KisMarketStatus? _cachedMarketStatus;
   bool _quoteLoading = false;
 
   @override
@@ -155,7 +176,10 @@ class _TradingScreenState extends ConsumerState<TradingScreen> {
     _instruments = List<_Instrument>.of(initialGroup.instruments);
     _selectedInstrument = _instruments.first;
     _portfolioFuture = _loadPortfolio();
+    _upbitPortfolioFuture = _loadUpbitPortfolio();
     _kisStatusFuture = _loadKisStatus();
+    _upbitStatusFuture = _loadUpbitStatus();
+    _marketStatusFuture = _loadMarketStatus();
     Future.microtask(() => _refreshWatchlistQuotes(showMessage: false));
   }
 
@@ -325,6 +349,17 @@ class _TradingScreenState extends ConsumerState<TradingScreen> {
     return portfolio;
   }
 
+  Future<UpbitPortfolio> _loadUpbitPortfolio() async {
+    final portfolio =
+        await ref.read(tradingRepositoryProvider).loadUpbitPortfolio();
+    if (mounted) {
+      setState(() {
+        _cachedUpbitPortfolio = portfolio;
+      });
+    }
+    return portfolio;
+  }
+
   Future<KisConnectionStatus> _loadKisStatus() async {
     final status = await ref.read(tradingRepositoryProvider).loadKisStatus();
     if (mounted) {
@@ -335,10 +370,33 @@ class _TradingScreenState extends ConsumerState<TradingScreen> {
     return status;
   }
 
+  Future<UpbitConnectionStatus> _loadUpbitStatus() async {
+    final status = await ref.read(tradingRepositoryProvider).loadUpbitStatus();
+    if (mounted) {
+      setState(() {
+        _cachedUpbitStatus = status;
+      });
+    }
+    return status;
+  }
+
+  Future<KisMarketStatus> _loadMarketStatus() async {
+    final status = await ref.read(tradingRepositoryProvider).loadMarketStatus();
+    if (mounted) {
+      setState(() {
+        _cachedMarketStatus = status;
+      });
+    }
+    return status;
+  }
+
   Future<void> _refreshTradingData() async {
     setState(() {
       _portfolioFuture = _loadPortfolio();
+      _upbitPortfolioFuture = _loadUpbitPortfolio();
       _kisStatusFuture = _loadKisStatus();
+      _upbitStatusFuture = _loadUpbitStatus();
+      _marketStatusFuture = _loadMarketStatus();
     });
     await _refreshWatchlistQuotes();
   }
@@ -714,6 +772,14 @@ class _TradingScreenState extends ConsumerState<TradingScreen> {
         instruments: _instruments,
         portfolioFuture: _portfolioFuture,
         cachedPortfolio: _cachedPortfolio,
+        upbitPortfolioFuture: _upbitPortfolioFuture,
+        cachedUpbitPortfolio: _cachedUpbitPortfolio,
+        marketStatusFuture: _marketStatusFuture,
+        cachedMarketStatus: _cachedMarketStatus,
+        kisStatusFuture: _kisStatusFuture,
+        cachedKisStatus: _cachedKisStatus,
+        upbitStatusFuture: _upbitStatusFuture,
+        cachedUpbitStatus: _cachedUpbitStatus,
         onOrder: _openOrder,
       ),
       _MarketTab(
@@ -741,6 +807,8 @@ class _TradingScreenState extends ConsumerState<TradingScreen> {
         initialSide: _tradeSide,
         portfolioFuture: _portfolioFuture,
         cachedPortfolio: _cachedPortfolio,
+        upbitPortfolioFuture: _upbitPortfolioFuture,
+        cachedUpbitPortfolio: _cachedUpbitPortfolio,
         onSideChanged: (side) => setState(() => _tradeSide = side),
       ),
       const _ActivityTab(),
@@ -829,7 +897,7 @@ Future<DomesticStockQuote> _loadQuoteForInstrument(
         instrument.symbol,
         marketCode: instrument.market,
       ),
-    _AssetClass.crypto => throw StateError('No quote adapter for crypto.'),
+    _AssetClass.crypto => repository.loadUpbitQuote(instrument.symbol),
   };
 }
 
@@ -843,7 +911,7 @@ Future<DomesticStockQuote> _loadQuoteForDraft(
         draft.symbol,
         marketCode: draft.market,
       ),
-    _AssetClass.crypto => throw StateError('No quote adapter for crypto.'),
+    _AssetClass.crypto => repository.loadUpbitQuote(draft.symbol),
   };
 }
 
@@ -940,11 +1008,25 @@ String _normalizeAssetSymbol(String value, _AssetClass assetClass) {
     _AssetClass.domesticStock => trimmed.replaceAll(RegExp(r'[^0-9]'), ''),
     _AssetClass.overseasStock =>
       trimmed.replaceAll(RegExp(r'[^A-Z0-9./-]'), ''),
-    _AssetClass.crypto => trimmed
-        .replaceAll('/', '-')
-        .replaceAll('_', '-')
-        .replaceAll(RegExp(r'[^A-Z0-9:-]'), ''),
+    _AssetClass.crypto => _normalizeUpbitMarket(trimmed),
   };
+}
+
+String _normalizeUpbitMarket(String value) {
+  final text = value
+      .replaceAll('/', '-')
+      .replaceAll('_', '-')
+      .replaceAll(RegExp(r'[^A-Z0-9:-]'), '');
+  final parts = text.split('-').where((part) => part.isNotEmpty).toList();
+  if (parts.length == 1) return 'KRW-${parts.first}';
+  if (parts.length >= 2) {
+    const quoteCurrencies = {'KRW', 'BTC', 'USDT'};
+    if (quoteCurrencies.contains(parts.first)) {
+      return '${parts.first}-${parts[1]}';
+    }
+    if (quoteCurrencies.contains(parts[1])) return '${parts[1]}-${parts.first}';
+  }
+  return text;
 }
 
 String _assetKey(_AssetClass assetClass, String market, String symbol) {
@@ -963,7 +1045,7 @@ String _symbolHint(_AssetClass assetClass) {
   return switch (assetClass) {
     _AssetClass.domesticStock => '005930',
     _AssetClass.overseasStock => 'AAPL',
-    _AssetClass.crypto => 'BTC-KRW',
+    _AssetClass.crypto => 'KRW-BTC',
   };
 }
 
@@ -971,7 +1053,7 @@ String _searchHint(_AssetClass assetClass) {
   return switch (assetClass) {
     _AssetClass.domesticStock => '예: 하이닉스, 삼성전자, 005930',
     _AssetClass.overseasStock => '예: Apple, NVIDIA, AAPL',
-    _AssetClass.crypto => '예: Bitcoin, Ethereum, BTC-KRW',
+    _AssetClass.crypto => '예: Bitcoin, Ethereum, KRW-BTC',
   };
 }
 
@@ -979,7 +1061,7 @@ List<String> _marketsForAssetClass(_AssetClass assetClass) {
   return switch (assetClass) {
     _AssetClass.domesticStock => const ['KOSPI', 'KOSDAQ', 'ETF', 'ETN'],
     _AssetClass.overseasStock => const ['NASDAQ', 'NYSE', 'AMEX'],
-    _AssetClass.crypto => const ['UPBIT', 'BITHUMB', 'BINANCE'],
+    _AssetClass.crypto => const ['UPBIT'],
   };
 }
 
@@ -1046,11 +1128,12 @@ class _AddInstrumentDialogState extends ConsumerState<_AddInstrumentDialog> {
       _searchError = null;
     });
     try {
+      final repository = ref.read(tradingRepositoryProvider);
       final results = widget.assetClass.usesDomesticKisApi
-          ? await ref
-              .read(tradingRepositoryProvider)
-              .searchDomesticStocks(query, limit: 60)
-          : _localCatalogResults(query);
+          ? await repository.searchDomesticStocks(query, limit: 60)
+          : widget.assetClass == _AssetClass.crypto
+              ? await repository.searchUpbitMarkets(query, limit: 60)
+              : _localCatalogResults(query);
       if (!mounted || epoch != _searchEpoch) return;
       setState(() {
         _searchResults = results;
@@ -1614,12 +1697,28 @@ class _TradingHomeTab extends ConsumerWidget {
     required this.instruments,
     required this.portfolioFuture,
     required this.cachedPortfolio,
+    required this.upbitPortfolioFuture,
+    required this.cachedUpbitPortfolio,
+    required this.marketStatusFuture,
+    required this.cachedMarketStatus,
+    required this.kisStatusFuture,
+    required this.cachedKisStatus,
+    required this.upbitStatusFuture,
+    required this.cachedUpbitStatus,
     required this.onOrder,
   });
 
   final List<_Instrument> instruments;
   final Future<KisPortfolio> portfolioFuture;
   final KisPortfolio? cachedPortfolio;
+  final Future<UpbitPortfolio> upbitPortfolioFuture;
+  final UpbitPortfolio? cachedUpbitPortfolio;
+  final Future<KisMarketStatus> marketStatusFuture;
+  final KisMarketStatus? cachedMarketStatus;
+  final Future<KisConnectionStatus> kisStatusFuture;
+  final KisConnectionStatus? cachedKisStatus;
+  final Future<UpbitConnectionStatus> upbitStatusFuture;
+  final UpbitConnectionStatus? cachedUpbitStatus;
   final void Function(_Instrument instrument, _TradeSide side) onOrder;
 
   @override
@@ -1644,6 +1743,27 @@ class _TradingHomeTab extends ConsumerWidget {
                 errorMessage: errorMessage,
               ),
               const SizedBox(height: 16),
+              FutureBuilder<UpbitPortfolio>(
+                future: upbitPortfolioFuture,
+                builder: (context, upbitSnapshot) {
+                  final upbitPortfolio =
+                      upbitSnapshot.data ?? cachedUpbitPortfolio;
+                  final upbitLoading = upbitSnapshot.connectionState ==
+                          ConnectionState.waiting &&
+                      upbitPortfolio == null;
+                  final upbitError =
+                      upbitSnapshot.hasError && upbitPortfolio == null
+                          ? (apiFailureMessage(upbitSnapshot.error!) ??
+                              'Upbit balance lookup failed.')
+                          : null;
+                  return _UpbitSummaryPanel(
+                    portfolio: upbitPortfolio,
+                    loading: upbitLoading,
+                    errorMessage: upbitError,
+                  );
+                },
+              ),
+              const SizedBox(height: 16),
               LayoutBuilder(
                 builder: (context, constraints) {
                   final holdingsPanel = _HoldingsPanel(
@@ -1659,7 +1779,17 @@ class _TradingHomeTab extends ConsumerWidget {
                       children: [
                         Expanded(flex: 6, child: holdingsPanel),
                         const SizedBox(width: 16),
-                        const Expanded(flex: 4, child: _RiskAndMarketPanel()),
+                        Expanded(
+                          flex: 4,
+                          child: _RiskAndMarketPanel(
+                            marketStatusFuture: marketStatusFuture,
+                            cachedMarketStatus: cachedMarketStatus,
+                            kisStatusFuture: kisStatusFuture,
+                            cachedKisStatus: cachedKisStatus,
+                            upbitStatusFuture: upbitStatusFuture,
+                            cachedUpbitStatus: cachedUpbitStatus,
+                          ),
+                        ),
                       ],
                     );
                   }
@@ -1668,7 +1798,14 @@ class _TradingHomeTab extends ConsumerWidget {
                     children: [
                       holdingsPanel,
                       const SizedBox(height: 16),
-                      const _RiskAndMarketPanel(),
+                      _RiskAndMarketPanel(
+                        marketStatusFuture: marketStatusFuture,
+                        cachedMarketStatus: cachedMarketStatus,
+                        kisStatusFuture: kisStatusFuture,
+                        cachedKisStatus: cachedKisStatus,
+                        upbitStatusFuture: upbitStatusFuture,
+                        cachedUpbitStatus: cachedUpbitStatus,
+                      ),
                     ],
                   );
                 },
@@ -1761,6 +1898,8 @@ class _OrderTicketTab extends ConsumerStatefulWidget {
     required this.initialSide,
     required this.portfolioFuture,
     required this.cachedPortfolio,
+    required this.upbitPortfolioFuture,
+    required this.cachedUpbitPortfolio,
     required this.onSideChanged,
   });
 
@@ -1768,6 +1907,8 @@ class _OrderTicketTab extends ConsumerStatefulWidget {
   final _TradeSide initialSide;
   final Future<KisPortfolio> portfolioFuture;
   final KisPortfolio? cachedPortfolio;
+  final Future<UpbitPortfolio> upbitPortfolioFuture;
+  final UpbitPortfolio? cachedUpbitPortfolio;
   final ValueChanged<_TradeSide> onSideChanged;
 
   @override
@@ -1783,6 +1924,9 @@ class _OrderTicketTabState extends ConsumerState<_OrderTicketTab> {
   bool _riskNoticeAgreed = false;
   bool _riskNoticeLoading = true;
   String? _riskNoticeError;
+  String? _upbitMarketForFutures;
+  Future<UpbitOrderChance>? _upbitOrderChanceFuture;
+  Future<UpbitOrderbook>? _upbitOrderbookFuture;
 
   @override
   void initState() {
@@ -1792,6 +1936,7 @@ class _OrderTicketTabState extends ConsumerState<_OrderTicketTab> {
     _priceController = TextEditingController(
       text: _orderPriceText(widget.instrument),
     );
+    _syncUpbitFutures();
     unawaited(_loadRiskNoticeConsent());
   }
 
@@ -1815,6 +1960,7 @@ class _OrderTicketTabState extends ConsumerState<_OrderTicketTab> {
     if (oldWidget.initialSide != widget.initialSide) {
       _side = widget.initialSide;
     }
+    _syncUpbitFutures();
   }
 
   @override
@@ -1824,10 +1970,19 @@ class _OrderTicketTabState extends ConsumerState<_OrderTicketTab> {
     super.dispose();
   }
 
+  void _syncUpbitFutures() {
+    if (widget.instrument.assetClass != _AssetClass.crypto) return;
+    final market = widget.instrument.symbol;
+    if (_upbitMarketForFutures == market) return;
+    final repository = ref.read(tradingRepositoryProvider);
+    _upbitMarketForFutures = market;
+    _upbitOrderChanceFuture = repository.loadUpbitOrderChance(market);
+    _upbitOrderbookFuture = repository.loadUpbitOrderbook(market);
+  }
+
   @override
   Widget build(BuildContext context) {
-    final quantity =
-        int.tryParse(removeNumberGrouping(_quantityController.text)) ?? 0;
+    final quantity = _parseOrderQuantity(_quantityController.text);
     final referencePriceReady = _hasDisplayQuote(widget.instrument);
     final livePrice = _hasLiveQuote(widget.instrument);
     final price = _marketOrder
@@ -1838,6 +1993,7 @@ class _OrderTicketTabState extends ConsumerState<_OrderTicketTab> {
         widget.instrument.assetClass == _AssetClass.domesticStock;
     final isOverseas =
         widget.instrument.assetClass == _AssetClass.overseasStock;
+    final isCrypto = widget.instrument.assetClass == _AssetClass.crypto;
     final orderCurrency = _priceCurrencySuffix(widget.instrument);
     final orderValidationMessage = _orderValidationMessage(
       quantity: quantity,
@@ -1848,6 +2004,20 @@ class _OrderTicketTabState extends ConsumerState<_OrderTicketTab> {
     final sideColor = _side == _TradeSide.buy
         ? MetaServerColors.green
         : MetaServerColors.danger;
+
+    if (isCrypto) {
+      return _buildUpbitTicket(
+        context: context,
+        quantity: quantity,
+        price: price,
+        estimated: estimated,
+        referencePriceReady: referencePriceReady,
+        livePrice: livePrice,
+        orderCurrency: orderCurrency,
+        orderValidationMessage: orderValidationMessage,
+        sideColor: sideColor,
+      );
+    }
 
     return FutureBuilder<KisPortfolio>(
       future: widget.portfolioFuture,
@@ -2073,6 +2243,226 @@ class _OrderTicketTabState extends ConsumerState<_OrderTicketTab> {
     );
   }
 
+  Widget _buildUpbitTicket({
+    required BuildContext context,
+    required num quantity,
+    required double price,
+    required num estimated,
+    required bool referencePriceReady,
+    required bool livePrice,
+    required String orderCurrency,
+    required String? orderValidationMessage,
+    required Color sideColor,
+  }) {
+    return FutureBuilder<UpbitPortfolio>(
+      future: widget.upbitPortfolioFuture,
+      builder: (context, snapshot) {
+        final portfolio = snapshot.data ?? widget.cachedUpbitPortfolio;
+        final accountLoading =
+            snapshot.connectionState == ConnectionState.waiting &&
+                portfolio == null;
+        final accountErrorMessage = snapshot.hasError && portfolio == null
+            ? (apiFailureMessage(snapshot.error!) ?? 'Upbit 잔고 조회에 실패했습니다.')
+            : null;
+        final holding =
+            _upbitHoldingForInstrument(portfolio, widget.instrument);
+        final orderableCash = portfolio?.orderableCash;
+        final afterOrderCash =
+            orderableCash == null ? null : orderableCash - estimated;
+        String? accountValidationMessage;
+        if (orderValidationMessage == null) {
+          if (accountLoading) {
+            accountValidationMessage = 'Upbit 잔고 조회 후 주문할 수 있습니다.';
+          } else if (accountErrorMessage != null || portfolio == null) {
+            accountValidationMessage =
+                accountErrorMessage ?? 'Upbit API 키와 잔고를 확인해 주세요.';
+          } else if (_side == _TradeSide.buy &&
+              orderableCash != null &&
+              estimated > orderableCash) {
+            accountValidationMessage = '주문가능 KRW를 초과했습니다.';
+          } else if (_side == _TradeSide.sell &&
+              (holding == null || quantity > holding.orderableQuantity)) {
+            accountValidationMessage = '매도 가능 수량을 초과했습니다.';
+          }
+        }
+        final validationMessage =
+            orderValidationMessage ?? accountValidationMessage;
+        final canSubmit =
+            validationMessage == null && !_submitting && !_riskNoticeLoading;
+
+        return _ScreenScroll(
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              final ticket = _Panel(
+                title: 'Upbit 주문 패널',
+                icon: Icons.currency_bitcoin_rounded,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    _SelectedInstrumentHeader(instrument: widget.instrument),
+                    const SizedBox(height: 14),
+                    SegmentedButton<_TradeSide>(
+                      segments: const [
+                        ButtonSegment(
+                          value: _TradeSide.buy,
+                          label: Text('매수'),
+                          icon: Icon(Icons.add_chart_rounded),
+                        ),
+                        ButtonSegment(
+                          value: _TradeSide.sell,
+                          label: Text('매도'),
+                          icon: Icon(Icons.show_chart_rounded),
+                        ),
+                      ],
+                      selected: {_side},
+                      onSelectionChanged: (value) {
+                        final side = value.first;
+                        setState(() => _side = side);
+                        widget.onSideChanged(side);
+                      },
+                    ),
+                    const SizedBox(height: 14),
+                    _FieldLabel(
+                      label: '계좌',
+                      child: _SelectLikeBox(
+                        icon: Icons.account_balance_wallet_outlined,
+                        title: accountLoading
+                            ? 'Upbit 잔고 조회 중'
+                            : accountErrorMessage != null
+                                ? 'Upbit 잔고 확인 필요'
+                                : 'Upbit KRW 마켓',
+                        subtitle: accountErrorMessage ??
+                            '주문가능 ${_won(orderableCash ?? 0)} · 보유 ${_formatQuantity(holding?.orderableQuantity ?? 0)} ${_cryptoBaseSymbol(widget.instrument.symbol)}',
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    _OrderTypeSwitch(
+                      marketOrder: _marketOrder,
+                      onChanged: (value) =>
+                          setState(() => _marketOrder = value),
+                    ),
+                    const SizedBox(height: 12),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: _NumberField(
+                            label: '수량',
+                            controller: _quantityController,
+                            suffix: _cryptoBaseSymbol(widget.instrument.symbol),
+                            allowDecimal: widget
+                                .instrument.assetClass.usesDecimalQuantity,
+                            onChanged: (_) => setState(() {}),
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: _NumberField(
+                            label: '가격',
+                            controller: _priceController,
+                            suffix: orderCurrency,
+                            allowDecimal: true,
+                            enabled: !_marketOrder,
+                            onChanged: (_) => setState(() {}),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    _EstimateBox(
+                      rows: [
+                        _Metric('예상 주문금액',
+                            _assetMoney(widget.instrument, estimated)),
+                        _Metric('예상 수수료',
+                            _assetMoney(widget.instrument, estimated * 0.0005)),
+                        _Metric(
+                          '주문 후 KRW',
+                          afterOrderCash == null ? '--' : _won(afterOrderCash),
+                        ),
+                      ],
+                    ),
+                    if (validationMessage != null) ...[
+                      const SizedBox(height: 10),
+                      _OrderValidationNotice(message: validationMessage),
+                    ],
+                    const SizedBox(height: 14),
+                    ElevatedButton.icon(
+                      onPressed: canSubmit
+                          ? () => _showOrderReview(context, estimated)
+                          : null,
+                      icon: Icon(
+                        _side == _TradeSide.buy
+                            ? Icons.shopping_cart_checkout_rounded
+                            : Icons.sell_outlined,
+                      ),
+                      label: Text(
+                        _submitting
+                            ? '주문 전송 중'
+                            : (_side == _TradeSide.buy
+                                ? 'Upbit 매수 확인'
+                                : 'Upbit 매도 확인'),
+                      ),
+                      style:
+                          ElevatedButton.styleFrom(backgroundColor: sideColor),
+                    ),
+                  ],
+                ),
+              );
+
+              final guide = Column(
+                children: [
+                  _Panel(
+                    title: '주문 전 점검',
+                    icon: Icons.verified_user_outlined,
+                    child: Column(
+                      children: [
+                        _CheckRow(label: '가격 표시', checked: referencePriceReady),
+                        _CheckRow(label: 'Upbit 실시간 가격', checked: livePrice),
+                        _CheckRow(
+                          label: 'Upbit 잔고 연결',
+                          checked:
+                              portfolio != null && accountErrorMessage == null,
+                        ),
+                        _CheckRow(
+                          label: '시장가/지정가 파라미터 검증',
+                          checked: validationMessage == null,
+                        ),
+                        _CheckRow(
+                          label: _riskNoticeAgreed
+                              ? '투자위험 고지 동의 완료'
+                              : '투자위험 고지 동의 필요',
+                          checked: _riskNoticeAgreed,
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  _UpbitChancePanel(future: _upbitOrderChanceFuture),
+                  const SizedBox(height: 16),
+                  _UpbitOrderbookPanel(future: _upbitOrderbookFuture),
+                ],
+              );
+
+              if (constraints.maxWidth >= 980) {
+                return Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Expanded(flex: 6, child: ticket),
+                    const SizedBox(width: 16),
+                    Expanded(flex: 4, child: guide),
+                  ],
+                );
+              }
+
+              return Column(
+                children: [ticket, const SizedBox(height: 16), guide],
+              );
+            },
+          ),
+        );
+      },
+    );
+  }
+
   String _orderAccountTitle({
     required KisPortfolio? portfolio,
     required bool loading,
@@ -2148,6 +2538,8 @@ class _OrderTicketTabState extends ConsumerState<_OrderTicketTab> {
 
   void _showOrderReview(BuildContext context, num estimated) {
     final sideText = _side == _TradeSide.buy ? '매수' : '매도';
+    final brokerName =
+        widget.instrument.assetClass == _AssetClass.crypto ? 'Upbit' : 'KIS';
     var riskNoticeAccepted = _riskNoticeAgreed;
     var savingConsent = false;
     showModalBottomSheet<void>(
@@ -2226,8 +2618,8 @@ class _OrderTicketTabState extends ConsumerState<_OrderTicketTab> {
                         savingConsent
                             ? '동의 저장 중'
                             : (_riskNoticeAgreed
-                                ? 'KIS로 주문 전송'
-                                : '동의 후 KIS로 주문 전송'),
+                                ? '$brokerName 주문 전송'
+                                : '동의 후 $brokerName 주문 전송'),
                       ),
                     ),
                   ],
@@ -2247,8 +2639,7 @@ class _OrderTicketTabState extends ConsumerState<_OrderTicketTab> {
       );
       return;
     }
-    final quantity =
-        int.tryParse(removeNumberGrouping(_quantityController.text)) ?? 0;
+    final quantity = _parseOrderQuantity(_quantityController.text);
     final limitPrice =
         _marketOrder ? null : _parseOrderPrice(_priceController.text);
     final orderPrice =
@@ -2273,7 +2664,7 @@ class _OrderTicketTabState extends ConsumerState<_OrderTicketTab> {
             DomesticStockOrderDraft(
               side: _side == _TradeSide.buy ? 'buy' : 'sell',
               symbol: widget.instrument.symbol,
-              quantity: quantity,
+              quantity: quantity.round(),
               orderKind: _marketOrder ? 'market' : 'limit',
               price: limitPrice?.round(),
             ),
@@ -2283,25 +2674,40 @@ class _OrderTicketTabState extends ConsumerState<_OrderTicketTab> {
               side: _side == _TradeSide.buy ? 'buy' : 'sell',
               marketCode: widget.instrument.market,
               symbol: widget.instrument.symbol,
-              quantity: quantity,
+              quantity: quantity.round(),
               orderKind: 'limit',
               price: limitPrice,
             ),
           ),
-        _AssetClass.crypto => throw StateError('코인 주문 어댑터는 준비 중입니다.'),
+        _AssetClass.crypto => await repository.placeUpbitOrder(
+            UpbitOrderDraft(
+              side: _side == _TradeSide.buy ? 'buy' : 'sell',
+              market: widget.instrument.symbol,
+              quantity:
+                  _marketOrder && _side == _TradeSide.buy ? null : quantity,
+              orderKind: _marketOrder ? 'market' : 'limit',
+              price: _marketOrder && _side == _TradeSide.buy
+                  ? orderPrice * quantity
+                  : limitPrice,
+            ),
+          ),
       };
       if (!mounted) return;
       final orderNo = result.brokerOrderNo ?? result.trId;
+      final brokerName =
+          widget.instrument.assetClass == _AssetClass.crypto ? 'Upbit' : 'KIS';
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('KIS 주문이 접수되었습니다. 주문번호: $orderNo')),
+        SnackBar(content: Text('$brokerName 주문이 접수되었습니다. 주문번호: $orderNo')),
       );
     } catch (error) {
       if (!mounted) return;
       final detail = apiFailureMessage(error);
+      final brokerName =
+          widget.instrument.assetClass == _AssetClass.crypto ? 'Upbit' : 'KIS';
       final message = detail != null
-          ? 'KIS 주문 전송 실패: $detail'
+          ? '$brokerName 주문 전송 실패: $detail'
           : isRecoverableApiFailure(error)
-              ? 'KIS 주문 전송에 실패했습니다. 키, 계좌, 실전주문 허용 설정을 확인해 주세요.'
+              ? '$brokerName 주문 전송에 실패했습니다. 키, 계좌, 실전주문 허용 설정을 확인해 주세요.'
               : error.toString();
       ScaffoldMessenger.of(
         context,
@@ -2327,7 +2733,7 @@ class _OrderTicketTabState extends ConsumerState<_OrderTicketTab> {
   }
 
   String? _orderValidationMessage({
-    required int quantity,
+    required num quantity,
     required double price,
     required bool livePrice,
     required bool referencePriceReady,
@@ -2360,6 +2766,10 @@ class _OrderTicketTabState extends ConsumerState<_OrderTicketTab> {
   }
 
   double _parseOrderPrice(String value) {
+    return double.tryParse(removeNumberGrouping(value)) ?? 0;
+  }
+
+  double _parseOrderQuantity(String value) {
     return double.tryParse(removeNumberGrouping(value)) ?? 0;
   }
 }
@@ -2817,6 +3227,111 @@ class _AccountSummaryPanel extends StatelessWidget {
   }
 }
 
+class _UpbitSummaryPanel extends StatelessWidget {
+  const _UpbitSummaryPanel({
+    required this.portfolio,
+    required this.loading,
+    required this.errorMessage,
+  });
+
+  final UpbitPortfolio? portfolio;
+  final bool loading;
+  final String? errorMessage;
+
+  @override
+  Widget build(BuildContext context) {
+    final totalEvaluation = portfolio?.totalEvaluationAmount ?? 0;
+    final totalProfitLoss = portfolio?.totalProfitLoss ?? 0;
+    final profitLossRate = portfolio?.profitLossRate ?? 0;
+    final orderableCash = portfolio?.orderableCash ?? 0;
+    final headline = loading
+        ? '조회 중'
+        : errorMessage != null
+            ? '조회 실패'
+            : _won(totalEvaluation);
+    return Container(
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: const Color(0xFF111827),
+        borderRadius: BorderRadius.circular(8),
+        border:
+            Border.all(color: MetaServerColors.amber.withValues(alpha: 0.24)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const _IconBadge(icon: Icons.currency_bitcoin_rounded),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Upbit 코인 계좌',
+                      style: TextStyle(
+                        color: Colors.white.withValues(alpha: 0.72),
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                    const SizedBox(height: 5),
+                    Text(
+                      headline,
+                      style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                            color: Colors.white,
+                            fontWeight: FontWeight.w900,
+                          ),
+                    ),
+                  ],
+                ),
+              ),
+              if (errorMessage != null)
+                Tooltip(
+                  message: errorMessage!,
+                  child: const Icon(Icons.error_outline_rounded,
+                      color: MetaServerColors.danger),
+                ),
+            ],
+          ),
+          const SizedBox(height: 14),
+          Wrap(
+            spacing: 10,
+            runSpacing: 10,
+            children: [
+              _SummaryMetric(
+                label: '평가손익',
+                value: loading || errorMessage != null
+                    ? '--'
+                    : _signedWon(totalProfitLoss),
+                positive: loading || errorMessage != null
+                    ? null
+                    : totalProfitLoss >= 0,
+              ),
+              _SummaryMetric(
+                label: '수익률',
+                value: loading || errorMessage != null
+                    ? '--'
+                    : _signedPercent(profitLossRate),
+                positive: loading || errorMessage != null
+                    ? null
+                    : profitLossRate >= 0,
+              ),
+              _SummaryMetric(
+                label: '주문가능 KRW',
+                value: loading || errorMessage != null
+                    ? '--'
+                    : _won(orderableCash),
+                positive: null,
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _HoldingsPanel extends StatelessWidget {
   const _HoldingsPanel({
     required this.portfolio,
@@ -2854,7 +3369,7 @@ class _HoldingsPanel extends StatelessWidget {
           else if (holdings.isEmpty)
             const _PanelStateMessage(
               icon: Icons.inventory_2_outlined,
-              message: '현재 계좌에 보유 중인 국내주식이 없습니다.',
+              message: 'KIS 잔고 기준으로 보유수량이 있는 주식이 없습니다.',
             )
           else
             for (final holding in holdings)
@@ -2908,49 +3423,396 @@ class _PanelStateMessage extends StatelessWidget {
 }
 
 class _RiskAndMarketPanel extends StatelessWidget {
-  const _RiskAndMarketPanel();
+  const _RiskAndMarketPanel({
+    required this.marketStatusFuture,
+    required this.cachedMarketStatus,
+    required this.kisStatusFuture,
+    required this.cachedKisStatus,
+    required this.upbitStatusFuture,
+    required this.cachedUpbitStatus,
+  });
+
+  final Future<KisMarketStatus> marketStatusFuture;
+  final KisMarketStatus? cachedMarketStatus;
+  final Future<KisConnectionStatus> kisStatusFuture;
+  final KisConnectionStatus? cachedKisStatus;
+  final Future<UpbitConnectionStatus> upbitStatusFuture;
+  final UpbitConnectionStatus? cachedUpbitStatus;
 
   @override
   Widget build(BuildContext context) {
     return Column(
-      children: const [
-        _Panel(
-          title: '시장 상태',
-          icon: Icons.timeline_rounded,
-          child: Column(
-            children: [
-              _MarketStatusRow(
-                label: 'KOSPI',
-                value: '2,742.18',
-                change: '+0.84%',
+      children: [
+        FutureBuilder<KisMarketStatus>(
+          future: marketStatusFuture,
+          builder: (context, snapshot) {
+            final status = snapshot.data ?? cachedMarketStatus;
+            final loading =
+                snapshot.connectionState == ConnectionState.waiting &&
+                    status == null;
+            final errorMessage = snapshot.hasError && status == null
+                ? (apiFailureMessage(snapshot.error!) ?? '시장 지수 조회에 실패했습니다.')
+                : null;
+            return _Panel(
+              title: '시장 상태',
+              icon: Icons.timeline_rounded,
+              child: _MarketStatusBody(
+                status: status,
+                loading: loading,
+                errorMessage: errorMessage,
               ),
-              _MarketStatusRow(
-                label: 'KOSDAQ',
-                value: '873.42',
-                change: '-0.18%',
-              ),
-              _MarketStatusRow(
-                label: 'USD/KRW',
-                value: '1,362.50',
-                change: '+0.11%',
-              ),
-            ],
-          ),
+            );
+          },
         ),
-        SizedBox(height: 16),
-        _Panel(
-          title: '리스크 가드',
-          icon: Icons.security_rounded,
-          child: Column(
-            children: [
-              _CheckRow(label: '실전투자 모드', checked: true),
-              _CheckRow(label: '실전주문 허용', checked: true),
-              _CheckRow(label: '확장시간 자동 라우팅', checked: true),
-              _CheckRow(label: '일 손실 한도 설정', checked: true),
-            ],
-          ),
+        const SizedBox(height: 16),
+        FutureBuilder<UpbitConnectionStatus>(
+          future: upbitStatusFuture,
+          builder: (context, snapshot) {
+            final status = snapshot.data ?? cachedUpbitStatus;
+            final loading =
+                snapshot.connectionState == ConnectionState.waiting &&
+                    status == null;
+            final errorMessage = snapshot.hasError && status == null
+                ? (apiFailureMessage(snapshot.error!) ?? 'Upbit 설정 조회에 실패했습니다.')
+                : null;
+            return _Panel(
+              title: 'Upbit 연결',
+              icon: Icons.currency_bitcoin_rounded,
+              child: _UpbitGuardBody(
+                status: status,
+                loading: loading,
+                errorMessage: errorMessage,
+              ),
+            );
+          },
+        ),
+        const SizedBox(height: 16),
+        FutureBuilder<KisConnectionStatus>(
+          future: kisStatusFuture,
+          builder: (context, snapshot) {
+            final status = snapshot.data ?? cachedKisStatus;
+            final loading =
+                snapshot.connectionState == ConnectionState.waiting &&
+                    status == null;
+            final errorMessage = snapshot.hasError && status == null
+                ? (apiFailureMessage(snapshot.error!) ?? 'KIS 설정 조회에 실패했습니다.')
+                : null;
+            return _Panel(
+              title: '리스크 가드',
+              icon: Icons.security_rounded,
+              child: _RiskGuardBody(
+                status: status,
+                loading: loading,
+                errorMessage: errorMessage,
+              ),
+            );
+          },
         ),
       ],
+    );
+  }
+}
+
+class _MarketStatusBody extends StatelessWidget {
+  const _MarketStatusBody({
+    required this.status,
+    required this.loading,
+    required this.errorMessage,
+  });
+
+  final KisMarketStatus? status;
+  final bool loading;
+  final String? errorMessage;
+
+  @override
+  Widget build(BuildContext context) {
+    if (loading) {
+      return const _PanelStateMessage(
+        icon: Icons.sync_rounded,
+        message: 'KIS 시장 지수를 조회 중입니다.',
+      );
+    }
+    if (errorMessage != null) {
+      return _PanelStateMessage(
+        icon: Icons.error_outline_rounded,
+        message: errorMessage!,
+        danger: true,
+      );
+    }
+    final items = status?.items ?? const <KisMarketStatusItem>[];
+    if (items.isEmpty) {
+      return const _PanelStateMessage(
+        icon: Icons.query_stats_rounded,
+        message: '표시할 시장 지수가 없습니다.',
+      );
+    }
+    return Column(
+      children: [
+        for (final item in items)
+          _MarketStatusRow(
+            label: item.label,
+            value: _marketValue(item.value),
+            change: _marketChange(item.changeRate),
+          ),
+      ],
+    );
+  }
+}
+
+class _RiskGuardBody extends StatelessWidget {
+  const _RiskGuardBody({
+    required this.status,
+    required this.loading,
+    required this.errorMessage,
+  });
+
+  final KisConnectionStatus? status;
+  final bool loading;
+  final String? errorMessage;
+
+  @override
+  Widget build(BuildContext context) {
+    if (loading) {
+      return const _PanelStateMessage(
+        icon: Icons.sync_rounded,
+        message: 'KIS 보호 설정을 확인 중입니다.',
+      );
+    }
+    if (errorMessage != null) {
+      return _PanelStateMessage(
+        icon: Icons.error_outline_rounded,
+        message: errorMessage!,
+        danger: true,
+      );
+    }
+    final connected = status?.configured == true;
+    return Column(
+      children: [
+        _CheckRow(label: 'KIS 계좌 연결', checked: connected),
+        _CheckRow(
+          label: '실전투자 모드',
+          checked: status?.defaultEnvironment == 'live',
+        ),
+        _CheckRow(
+          label: '실전주문 허용',
+          checked: status?.liveTradingEnabled == true,
+        ),
+        _CheckRow(
+          label: '자동 거래소 라우팅',
+          checked: status?.orderProtocol == 'modern',
+        ),
+        _CheckRow(
+          label: '주문 시간대 검증',
+          checked: status?.regularSessionOnly == true,
+        ),
+      ],
+    );
+  }
+}
+
+class _UpbitGuardBody extends StatelessWidget {
+  const _UpbitGuardBody({
+    required this.status,
+    required this.loading,
+    required this.errorMessage,
+  });
+
+  final UpbitConnectionStatus? status;
+  final bool loading;
+  final String? errorMessage;
+
+  @override
+  Widget build(BuildContext context) {
+    if (loading) {
+      return const _PanelStateMessage(
+        icon: Icons.sync_rounded,
+        message: 'Upbit 설정을 확인 중입니다.',
+      );
+    }
+    if (errorMessage != null) {
+      return _PanelStateMessage(
+        icon: Icons.error_outline_rounded,
+        message: errorMessage!,
+        danger: true,
+      );
+    }
+    final connected = status?.configured == true;
+    return Column(
+      children: [
+        _CheckRow(label: 'API Key 연결', checked: connected),
+        _CheckRow(
+          label: '실전 주문 허용',
+          checked: status?.liveTradingEnabled == true,
+        ),
+        _CheckRow(
+          label: status?.accessKeyMasked == null
+              ? '키 마스킹 확인'
+              : '키 ${status!.accessKeyMasked}',
+          checked: connected,
+        ),
+      ],
+    );
+  }
+}
+
+class _UpbitChancePanel extends StatelessWidget {
+  const _UpbitChancePanel({required this.future});
+
+  final Future<UpbitOrderChance>? future;
+
+  @override
+  Widget build(BuildContext context) {
+    final chanceFuture = future;
+    return _Panel(
+      title: 'Upbit 주문 조건',
+      icon: Icons.rule_rounded,
+      child: chanceFuture == null
+          ? const _PanelStateMessage(
+              icon: Icons.info_outline_rounded,
+              message: '코인 종목을 선택하면 주문 조건을 조회합니다.',
+            )
+          : FutureBuilder<UpbitOrderChance>(
+              future: chanceFuture,
+              builder: (context, snapshot) {
+                if (snapshot.connectionState == ConnectionState.waiting &&
+                    !snapshot.hasData) {
+                  return const _PanelStateMessage(
+                    icon: Icons.sync_rounded,
+                    message: '주문 가능 정보를 조회 중입니다.',
+                  );
+                }
+                if (snapshot.hasError && !snapshot.hasData) {
+                  return _PanelStateMessage(
+                    icon: Icons.error_outline_rounded,
+                    message: apiFailureMessage(snapshot.error!) ??
+                        '주문 가능 정보 조회에 실패했습니다.',
+                    danger: true,
+                  );
+                }
+                final chance = snapshot.data;
+                if (chance == null) {
+                  return const _PanelStateMessage(
+                    icon: Icons.info_outline_rounded,
+                    message: '주문 가능 정보가 없습니다.',
+                  );
+                }
+                return Column(
+                  children: [
+                    _ReviewRow(
+                      label: '최소 주문',
+                      value: _won(chance.minTotal),
+                    ),
+                    _ReviewRow(
+                      label: '매수 수수료',
+                      value: _signedPercent(chance.bidFee * 100),
+                    ),
+                    _ReviewRow(
+                      label: '매도 수수료',
+                      value: _signedPercent(chance.askFee * 100),
+                    ),
+                    _ReviewRow(
+                      label: '주문가능 KRW',
+                      value: _won(chance.bidAccountBalance),
+                    ),
+                  ],
+                );
+              },
+            ),
+    );
+  }
+}
+
+class _UpbitOrderbookPanel extends StatelessWidget {
+  const _UpbitOrderbookPanel({required this.future});
+
+  final Future<UpbitOrderbook>? future;
+
+  @override
+  Widget build(BuildContext context) {
+    final orderbookFuture = future;
+    return _Panel(
+      title: '호가',
+      icon: Icons.format_list_numbered_rounded,
+      child: orderbookFuture == null
+          ? const _PanelStateMessage(
+              icon: Icons.info_outline_rounded,
+              message: '코인 종목을 선택하면 호가를 조회합니다.',
+            )
+          : FutureBuilder<UpbitOrderbook>(
+              future: orderbookFuture,
+              builder: (context, snapshot) {
+                if (snapshot.connectionState == ConnectionState.waiting &&
+                    !snapshot.hasData) {
+                  return const _PanelStateMessage(
+                    icon: Icons.sync_rounded,
+                    message: '호가를 조회 중입니다.',
+                  );
+                }
+                if (snapshot.hasError && !snapshot.hasData) {
+                  return _PanelStateMessage(
+                    icon: Icons.error_outline_rounded,
+                    message:
+                        apiFailureMessage(snapshot.error!) ?? '호가 조회에 실패했습니다.',
+                    danger: true,
+                  );
+                }
+                final units = snapshot.data?.units ?? const [];
+                if (units.isEmpty) {
+                  return const _PanelStateMessage(
+                    icon: Icons.info_outline_rounded,
+                    message: '표시할 호가가 없습니다.',
+                  );
+                }
+                return Column(
+                  children: [
+                    for (final unit in units.take(6))
+                      Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 4),
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: Text(
+                                _won(unit.bidPrice),
+                                style: const TextStyle(
+                                  color: MetaServerColors.green,
+                                  fontWeight: FontWeight.w900,
+                                ),
+                              ),
+                            ),
+                            Text(
+                              _formatQuantity(unit.bidSize),
+                              style: TextStyle(
+                                color: MetaServerColors.ink
+                                    .withValues(alpha: 0.52),
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            Text(
+                              _formatQuantity(unit.askSize),
+                              style: TextStyle(
+                                color: MetaServerColors.ink
+                                    .withValues(alpha: 0.52),
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                            Expanded(
+                              child: Text(
+                                _won(unit.askPrice),
+                                textAlign: TextAlign.right,
+                                style: const TextStyle(
+                                  color: MetaServerColors.danger,
+                                  fontWeight: FontWeight.w900,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                  ],
+                );
+              },
+            ),
     );
   }
 }
@@ -3814,6 +4676,9 @@ class _HoldingTile extends StatelessWidget {
         : instrument.price * holding.quantity;
     final profitRate = holding.profitLossRate;
     final quantity = _formatQuantity(holding.quantity);
+    final currency = holding.currency.trim().isNotEmpty
+        ? holding.currency
+        : (holding.assetClass == 'overseas_stock' ? 'USD' : 'KRW');
     return _DataTile(
       leading: _IconBadge(
         icon: Icons.business_center_outlined,
@@ -3821,13 +4686,13 @@ class _HoldingTile extends StatelessWidget {
       ),
       title: holding.name,
       subtitle:
-          '${holding.symbol} · $quantity주 · 평균 ${_won(holding.averagePrice)}',
+          '${holding.market} · ${holding.symbol} · $quantity주 · 평균 ${_moneyByCurrency(holding.averagePrice, currency)}',
       trailing: Column(
         crossAxisAlignment: CrossAxisAlignment.end,
         mainAxisSize: MainAxisSize.min,
         children: [
           Text(
-            _won(evaluationAmount),
+            _moneyByCurrency(evaluationAmount, currency),
             style: const TextStyle(fontWeight: FontWeight.w900),
           ),
           const SizedBox(height: 4),
@@ -4303,7 +5168,11 @@ class _MarketStatusRow extends StatelessWidget {
     return _ReviewRow(
       label: label,
       value: '$value  $change',
-      valueColor: positive ? MetaServerColors.green : MetaServerColors.danger,
+      valueColor: change == '--'
+          ? MetaServerColors.ink.withValues(alpha: 0.62)
+          : positive
+              ? MetaServerColors.green
+              : MetaServerColors.danger,
     );
   }
 }
@@ -4941,7 +5810,7 @@ const _popularOverseasSymbols = [
   'GOOGL',
   'AMZN'
 ];
-const _popularCryptoSymbols = ['BTC-KRW', 'ETH-KRW', 'SOL-KRW', 'XRP-KRW'];
+const _popularCryptoSymbols = ['KRW-BTC', 'KRW-ETH', 'KRW-SOL', 'KRW-XRP'];
 
 List<_StockCatalogItem> _popularCatalogItems(_AssetClass assetClass) {
   final symbols = switch (assetClass) {
@@ -5161,7 +6030,7 @@ const _stockCatalog = [
   _StockCatalogItem(
     assetClass: _AssetClass.crypto,
     market: 'UPBIT',
-    symbol: 'BTC-KRW',
+    symbol: 'KRW-BTC',
     name: 'Bitcoin',
     sector: 'Crypto',
     aliases: ['btc', 'bitcoin'],
@@ -5169,7 +6038,7 @@ const _stockCatalog = [
   _StockCatalogItem(
     assetClass: _AssetClass.crypto,
     market: 'UPBIT',
-    symbol: 'ETH-KRW',
+    symbol: 'KRW-ETH',
     name: 'Ethereum',
     sector: 'Crypto',
     aliases: ['eth', 'ethereum'],
@@ -5177,7 +6046,7 @@ const _stockCatalog = [
   _StockCatalogItem(
     assetClass: _AssetClass.crypto,
     market: 'UPBIT',
-    symbol: 'SOL-KRW',
+    symbol: 'KRW-SOL',
     name: 'Solana',
     sector: 'Crypto',
     aliases: ['sol', 'solana'],
@@ -5185,7 +6054,7 @@ const _stockCatalog = [
   _StockCatalogItem(
     assetClass: _AssetClass.crypto,
     market: 'UPBIT',
-    symbol: 'XRP-KRW',
+    symbol: 'KRW-XRP',
     name: 'XRP',
     sector: 'Crypto',
     aliases: ['xrp', 'ripple'],
@@ -5276,7 +6145,7 @@ const _defaultInstruments = [
   _Instrument(
     assetClass: _AssetClass.crypto,
     market: 'UPBIT',
-    symbol: 'BTC-KRW',
+    symbol: 'KRW-BTC',
     name: 'Bitcoin',
     sector: 'Crypto',
     price: 92840000,
@@ -5290,7 +6159,7 @@ const _defaultInstruments = [
   _Instrument(
     assetClass: _AssetClass.crypto,
     market: 'UPBIT',
-    symbol: 'ETH-KRW',
+    symbol: 'KRW-ETH',
     name: 'Ethereum',
     sector: 'Crypto',
     price: 4380000,
@@ -5314,8 +6183,9 @@ _Instrument _instrumentForHolding(
   List<_Instrument> instruments,
   KisHolding holding,
 ) {
+  final assetClass = _assetClassFromApi(holding.assetClass);
   for (final instrument in instruments) {
-    if (instrument.assetClass == _AssetClass.domesticStock &&
+    if (instrument.assetClass == assetClass &&
         instrument.symbol == holding.symbol) {
       return instrument.copyWith(
         price: holding.currentPrice > 0 ? holding.currentPrice : null,
@@ -5327,7 +6197,7 @@ _Instrument _instrumentForHolding(
 
   final catalogItem = _stockCatalogItemBySymbol(
     holding.symbol,
-    assetClass: _AssetClass.domesticStock,
+    assetClass: assetClass,
   );
   final price = holding.currentPrice > 0
       ? holding.currentPrice
@@ -5335,7 +6205,10 @@ _Instrument _instrumentForHolding(
           ? holding.evaluationAmount / holding.quantity
           : 0.0;
   return _Instrument(
-    market: catalogItem?.market ?? 'KOSPI',
+    assetClass: assetClass,
+    market: holding.market.isNotEmpty
+        ? holding.market
+        : (catalogItem?.market ?? _defaultMarketForAssetClass(assetClass)),
     symbol: holding.symbol,
     name: holding.name.isNotEmpty
         ? holding.name
@@ -5352,8 +6225,38 @@ _Instrument _instrumentForHolding(
   );
 }
 
+UpbitHolding? _upbitHoldingForInstrument(
+  UpbitPortfolio? portfolio,
+  _Instrument instrument,
+) {
+  if (portfolio == null) return null;
+  for (final holding in portfolio.holdings) {
+    if (holding.market.toUpperCase() == instrument.symbol.toUpperCase()) {
+      return holding;
+    }
+  }
+  return null;
+}
+
 String _won(num value) {
   return '${_comma(value.round())}원';
+}
+
+String _moneyByCurrency(num value, String currency) {
+  final normalized = currency.trim().toUpperCase();
+  if (normalized == 'USD') {
+    return '\$${_groupedDecimal(value, decimalPlaces: 2)}';
+  }
+  if (normalized == 'JPY') {
+    return '¥${_groupedDecimal(value, decimalPlaces: 0)}';
+  }
+  if (normalized == 'CNY') {
+    return '¥${_groupedDecimal(value, decimalPlaces: 2)}';
+  }
+  if (normalized == 'HKD') {
+    return 'HK\$${_groupedDecimal(value, decimalPlaces: 2)}';
+  }
+  return _won(value);
 }
 
 String _signedWon(num value) {
@@ -5369,9 +6272,20 @@ String _signedPercent(num value) {
   return formatted;
 }
 
-String _formatQuantity(num value) {
+String _marketValue(num? value) {
+  if (value == null) return '--';
+  return _groupedDecimal(value, decimalPlaces: 2);
+}
+
+String _marketChange(num? value) {
+  if (value == null) return '--';
+  return _signedPercent(value);
+}
+
+String _formatQuantity(num value, {int decimalPlaces = 8}) {
   if (value == value.roundToDouble()) return _comma(value.round());
-  return value.toStringAsFixed(2);
+  final fixed = value.toStringAsFixed(decimalPlaces);
+  return fixed.replaceFirst(RegExp(r'\.?0+$'), '');
 }
 
 String _formatOrderTime(String? value) {
@@ -5417,9 +6331,18 @@ int _minutesSinceMidnight(DateTime value) {
 String _priceCurrencySuffix(_Instrument instrument) {
   return switch (instrument.assetClass) {
     _AssetClass.overseasStock => 'USD',
-    _AssetClass.crypto => instrument.symbol.endsWith('-USDT') ? 'USDT' : '원',
+    _AssetClass.crypto => instrument.symbol.startsWith('USDT-')
+        ? 'USDT'
+        : instrument.symbol.startsWith('BTC-')
+            ? 'BTC'
+            : '원',
     _AssetClass.domesticStock => '원',
   };
+}
+
+String _cryptoBaseSymbol(String market) {
+  final parts = market.split('-');
+  return parts.length >= 2 ? parts[1] : market;
 }
 
 String _kisEnvironmentLabel(String? environment) {
@@ -5433,6 +6356,10 @@ String _kisEnvironmentLabel(String? environment) {
 String _assetMoney(_Instrument instrument, num value) {
   if (instrument.assetClass == _AssetClass.overseasStock) {
     return '\$${_groupedDecimal(value, decimalPlaces: 2)}';
+  }
+  if (instrument.assetClass == _AssetClass.crypto &&
+      !instrument.symbol.startsWith('KRW-')) {
+    return '${_groupedDecimal(value, decimalPlaces: 4)} ${_priceCurrencySuffix(instrument)}';
   }
   return _won(value);
 }
