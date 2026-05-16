@@ -187,4 +187,14 @@ class ApiClient {
     );
     return response.data ?? <String, dynamic>{};
   }
+
+  Future<void> deleteJson(
+    String path, {
+    Map<String, dynamic>? data,
+  }) async {
+    await _dio.delete<void>(
+      _normalizePath(path),
+      data: data,
+    );
+  }
 }

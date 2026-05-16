@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from psycopg import Connection
 
 from app.core.config import get_settings
@@ -133,6 +133,27 @@ def update_strategy_status(
             detail="Auto trading strategy was not found.",
         )
     return AutoStrategyRecord(**row)
+
+
+@router.delete(
+    "/strategies/{strategy_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
+)
+def delete_strategy(
+    strategy_id: str,
+    principal: FirebasePrincipal = Depends(get_current_principal),
+) -> Response:
+    _require_database()
+    with db_connection() as conn:
+        user_id = _current_user_id(conn, principal)
+        deleted = auto_trading.delete_strategy(conn, user_id, strategy_id)
+    if not deleted:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Auto trading strategy was not found.",
+        )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.put("/controls", response_model=AutoTradingControlRecord)

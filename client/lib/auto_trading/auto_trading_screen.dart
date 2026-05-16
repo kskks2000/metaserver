@@ -135,6 +135,25 @@ class _AutoTradingScreenState extends ConsumerState<AutoTradingScreen> {
     }
   }
 
+  Future<void> _deleteStrategy(AutoStrategy strategy) async {
+    setState(() => _saving = true);
+    try {
+      await ref.read(autoTradingRepositoryProvider).deleteStrategy(strategy.id);
+      await _refresh();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('${strategy.name} 전략을 삭제했습니다.')),
+      );
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _notice = apiFailureMessage(error) ?? error.toString();
+      });
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
   Future<void> _evaluate() async {
     setState(() => _evaluating = true);
     try {
@@ -232,6 +251,7 @@ class _AutoTradingScreenState extends ConsumerState<AutoTradingScreen> {
                         evaluating: _evaluating,
                         onCreateStrategy: _createStrategy,
                         onChangeStatus: _changeStatus,
+                        onDeleteStrategy: _deleteStrategy,
                         onSaveControl: _saveControl,
                         onEvaluate: _evaluate,
                       ),
@@ -255,6 +275,7 @@ class _SelectedTab extends StatelessWidget {
     required this.evaluating,
     required this.onCreateStrategy,
     required this.onChangeStatus,
+    required this.onDeleteStrategy,
     required this.onSaveControl,
     required this.onEvaluate,
   });
@@ -265,6 +286,7 @@ class _SelectedTab extends StatelessWidget {
   final bool evaluating;
   final ValueChanged<AutoStrategyDraft> onCreateStrategy;
   final void Function(AutoStrategy strategy, String status) onChangeStatus;
+  final ValueChanged<AutoStrategy> onDeleteStrategy;
   final ValueChanged<AutoTradingControl> onSaveControl;
   final VoidCallback onEvaluate;
 
@@ -277,6 +299,7 @@ class _SelectedTab extends StatelessWidget {
           saving: saving,
           onCreateStrategy: onCreateStrategy,
           onChangeStatus: onChangeStatus,
+          onDeleteStrategy: onDeleteStrategy,
         ),
       _AutoTab.execution => _ExecutionTab(
           overview: overview,
@@ -630,12 +653,14 @@ class _StrategyTab extends StatefulWidget {
     required this.saving,
     required this.onCreateStrategy,
     required this.onChangeStatus,
+    required this.onDeleteStrategy,
   });
 
   final AutoTradingOverview overview;
   final bool saving;
   final ValueChanged<AutoStrategyDraft> onCreateStrategy;
   final void Function(AutoStrategy strategy, String status) onChangeStatus;
+  final ValueChanged<AutoStrategy> onDeleteStrategy;
 
   @override
   State<_StrategyTab> createState() => _StrategyTabState();
@@ -731,7 +756,7 @@ class _StrategyTabState extends State<_StrategyTab> {
                 children: [
                   Expanded(
                     child: DropdownButtonFormField<String>(
-                      initialValue: _market,
+                      value: _market,
                       decoration: const InputDecoration(
                         labelText: '시장',
                         prefixIcon: Icon(Icons.account_balance_outlined),
@@ -904,6 +929,7 @@ class _StrategyTabState extends State<_StrategyTab> {
                         strategy: strategy,
                         saving: widget.saving,
                         onChangeStatus: widget.onChangeStatus,
+                        onDeleteStrategy: widget.onDeleteStrategy,
                       ),
                   ],
                 ),
@@ -1445,11 +1471,13 @@ class _StrategyCard extends StatelessWidget {
     required this.strategy,
     required this.saving,
     required this.onChangeStatus,
+    required this.onDeleteStrategy,
   });
 
   final AutoStrategy strategy;
   final bool saving;
   final void Function(AutoStrategy strategy, String status) onChangeStatus;
+  final ValueChanged<AutoStrategy> onDeleteStrategy;
 
   @override
   Widget build(BuildContext context) {
@@ -1545,11 +1573,49 @@ class _StrategyCard extends StatelessWidget {
                 onPressed:
                     saving ? null : () => onChangeStatus(strategy, 'stopped'),
               ),
+              _SmallButton(
+                icon: Icons.delete_outline_rounded,
+                label: '삭제',
+                foregroundColor: MetaServerColors.danger,
+                onPressed: saving ? null : () => _confirmDelete(context),
+              ),
             ],
           ),
         ],
       ),
     );
+  }
+
+  Future<void> _confirmDelete(BuildContext context) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text('전략 삭제'),
+          content: Text(
+            '${strategy.name} 전략을 삭제할까요? 삭제하면 전략 목록과 자동 평가 대상에서 제외됩니다.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(false),
+              child: const Text('취소'),
+            ),
+            FilledButton.icon(
+              onPressed: () => Navigator.of(dialogContext).pop(true),
+              icon: const Icon(Icons.delete_outline_rounded),
+              label: const Text('삭제'),
+              style: FilledButton.styleFrom(
+                backgroundColor: MetaServerColors.danger,
+                foregroundColor: Colors.white,
+              ),
+            ),
+          ],
+        );
+      },
+    );
+    if (confirmed == true) {
+      onDeleteStrategy(strategy);
+    }
   }
 }
 
@@ -2023,7 +2089,7 @@ class _DarkSwitchRow extends StatelessWidget {
         Switch(
           value: value,
           onChanged: onChanged,
-          activeThumbColor: color,
+          activeColor: color,
         ),
       ],
     );
@@ -2183,11 +2249,13 @@ class _SmallButton extends StatelessWidget {
     required this.icon,
     required this.label,
     required this.onPressed,
+    this.foregroundColor,
   });
 
   final IconData icon;
   final String label;
   final VoidCallback? onPressed;
+  final Color? foregroundColor;
 
   @override
   Widget build(BuildContext context) {
@@ -2196,6 +2264,7 @@ class _SmallButton extends StatelessWidget {
       icon: Icon(icon, size: 16),
       label: Text(label),
       style: OutlinedButton.styleFrom(
+        foregroundColor: foregroundColor,
         minimumSize: const Size(0, 36),
         padding: const EdgeInsets.symmetric(horizontal: 10),
       ),

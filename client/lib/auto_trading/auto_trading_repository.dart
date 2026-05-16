@@ -47,6 +47,10 @@ class AutoTradingRepository {
     return AutoStrategy.fromJson(data);
   }
 
+  Future<void> deleteStrategy(String strategyId) async {
+    await _apiClient.deleteJson('/auto-trading/strategies/$strategyId');
+  }
+
   Future<AutoEvaluationResult> evaluateStrategies() async {
     final data = await _apiClient.postJson('/auto-trading/evaluate');
     return AutoEvaluationResult.fromJson(data);

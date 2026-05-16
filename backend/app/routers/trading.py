@@ -501,8 +501,8 @@ def market_status(
             )
 
     for label, market in (
-        ("UPBIT ETC", "KRW-ETC"),
-        ("UPBIT ETH", "KRW-ETH"),
+        ("UPBIT BTC", "KRW-BTC"),
+        ("UPBIT XRP", "KRW-XRP"),
     ):
         try:
             ticker = get_upbit_client().ticker(market)

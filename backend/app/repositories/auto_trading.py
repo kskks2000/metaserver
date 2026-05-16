@@ -295,6 +295,57 @@ def update_strategy_status(
     return _row(strategy)
 
 
+def delete_strategy(
+    conn: Connection,
+    user_id: str,
+    strategy_id: str,
+) -> bool:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE auto_trading_strategies
+            SET
+                status = 'archived',
+                deleted_at = now(),
+                updated_by = %(user_id)s
+            WHERE id = %(strategy_id)s
+              AND user_id = %(user_id)s
+              AND deleted_at IS NULL
+            RETURNING id
+            """,
+            {
+                "strategy_id": strategy_id,
+                "user_id": user_id,
+            },
+        )
+        strategy = cur.fetchone()
+        if strategy is None:
+            return False
+        cur.execute(
+            """
+            INSERT INTO auto_strategy_events (
+                strategy_id,
+                severity,
+                event_type,
+                message,
+                metadata
+            )
+            VALUES (
+                %(strategy_id)s,
+                'info',
+                'strategy.deleted',
+                'Strategy definition was deleted.',
+                %(metadata)s::jsonb
+            )
+            """,
+            {
+                "strategy_id": strategy["id"],
+                "metadata": Json({"deleted_by": user_id}),
+            },
+        )
+    return True
+
+
 def list_events(
     conn: Connection,
     user_id: str,
