@@ -10,6 +10,12 @@ class MetaServerColors {
   static const green = Color(0xFF2FAE73);
   static const amber = Color(0xFFD3A12F);
   static const danger = Color(0xFFE5484D);
+  static const rise = Color(0xFFE5484D);
+  static const fall = Color(0xFF2563EB);
+  static const riseOnDark = Color(0xFFFF8A8A);
+  static const fallOnDark = Color(0xFF93C5FD);
+  static const buy = rise;
+  static const sell = fall;
 }
 
 ThemeData buildMetaServerTheme() {

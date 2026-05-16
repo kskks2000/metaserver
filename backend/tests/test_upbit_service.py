@@ -177,6 +177,23 @@ class UpbitClientTest(unittest.TestCase):
         self.assertEqual(activity.executions[0].side, OrderSide.sell)
         self.assertEqual(activity.executions[0].average_price, Decimal("100000000"))
 
+    def test_order_activity_queries_long_history_in_week_chunks(self) -> None:
+        closed_pages = []
+
+        def fake_request(method, path, **kwargs):
+            if path == self.client.CLOSED_ORDERS_PATH:
+                closed_pages.append(kwargs["params"])
+            return []
+
+        self.client._authenticated_request = fake_request
+
+        activity = self.client.order_activity(days=30)
+
+        self.assertEqual(len(closed_pages), 5)
+        self.assertTrue(all(params.get("page") == "1" for params in closed_pages))
+        self.assertEqual((activity.end_date - activity.start_date).days, 29)
+        self.assertEqual(activity.raw_summary["closed_count"], 0)
+
     def test_cancel_order_dry_run_builds_uuid_payload(self) -> None:
         result = self.client.cancel_order(
             UpbitOrderCancelRequest(order_id="order-uuid", dry_run=True)

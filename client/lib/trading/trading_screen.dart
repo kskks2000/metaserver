@@ -72,6 +72,8 @@ _AssetClass _assetClassFromApi(Object? value) {
 
 const _watchlistStorageKey = 'metaserver.trading.watchlist.custom.v1';
 const _watchlistGroupsStorageKey = 'metaserver.trading.watchlist.groups.v1';
+const _executionHistoryStorageKey = 'metaserver.trading.executions.v1';
+const _executionHistoryLimit = 500;
 const _defaultWatchlistGroupId = 'default';
 
 String _defaultWatchlistGroupIdForAssetClass(_AssetClass assetClass) {
@@ -96,7 +98,6 @@ List<_WatchlistGroup> _normalizeWatchlistGroups(
       if (!usedAssetKeys.add(instrument.assetKey)) continue;
       instruments.add(instrument);
     }
-    if (instruments.isEmpty) continue;
 
     var id = group.id;
     if (!usedIds.add(id)) {
@@ -137,6 +138,29 @@ List<_WatchlistGroup> _normalizeWatchlistGroups(
   return normalized;
 }
 
+_Instrument _instrumentSelectionFor(
+  _AssetClass assetClass,
+  List<_Instrument> instruments, [
+  _Instrument? current,
+]) {
+  if (current != null) {
+    for (final instrument in instruments) {
+      if (instrument.assetKey == current.assetKey) {
+        return instrument;
+      }
+    }
+  }
+  if (instruments.isNotEmpty) return instruments.first;
+  return _defaultInstrumentForAssetClass(assetClass);
+}
+
+_Instrument _instrumentSelectionForGroup(
+  _WatchlistGroup group, [
+  _Instrument? current,
+]) {
+  return _instrumentSelectionFor(group.assetClass, group.instruments, current);
+}
+
 class TradingScreen extends ConsumerStatefulWidget {
   const TradingScreen({super.key});
 
@@ -174,7 +198,7 @@ class _TradingScreenState extends ConsumerState<TradingScreen> {
     _selectedGroupId = initialGroup.id;
     _selectedGroupIdsByAssetClass[_selectedAssetClass] = initialGroup.id;
     _instruments = List<_Instrument>.of(initialGroup.instruments);
-    _selectedInstrument = _instruments.first;
+    _selectedInstrument = _instrumentSelectionForGroup(initialGroup);
     _portfolioFuture = _loadPortfolio();
     _upbitPortfolioFuture = _loadUpbitPortfolio();
     _kisStatusFuture = _loadKisStatus();
@@ -282,7 +306,8 @@ class _TradingScreenState extends ConsumerState<TradingScreen> {
       _selectedGroupId = nextGroup.id;
       _selectedGroupIdsByAssetClass[assetClass] = nextGroup.id;
       _instruments = List<_Instrument>.of(nextGroup.instruments);
-      _selectedInstrument = _instruments.first;
+      _selectedInstrument =
+          _instrumentSelectionForGroup(nextGroup, _selectedInstrument);
     });
     Future.microtask(() => _refreshWatchlistQuotes(showMessage: false));
   }
@@ -316,10 +341,8 @@ class _TradingScreenState extends ConsumerState<TradingScreen> {
       orElse: () => _selectedGroup,
     );
     final groupInstruments = List<_Instrument>.of(group.instruments);
-    final nextSelectedInstrument = groupInstruments.firstWhere(
-      (instrument) => instrument.assetKey == _selectedInstrument.assetKey,
-      orElse: () => groupInstruments.first,
-    );
+    final nextSelectedInstrument =
+        _instrumentSelectionForGroup(group, _selectedInstrument);
     setState(() {
       _selectedGroupId = group.id;
       _selectedGroupIdsByAssetClass[_selectedAssetClass] = group.id;
@@ -673,17 +696,19 @@ class _TradingScreenState extends ConsumerState<TradingScreen> {
         id: 'group_${DateTime.now().microsecondsSinceEpoch}',
         assetClass: _selectedAssetClass,
         name: groupName,
-        instruments: [_selectedInstrument],
+        instruments: const <_Instrument>[],
       );
       setState(() {
         _watchlistGroups = [..._watchlistGroups, newGroup];
         _selectedGroupId = newGroup.id;
         _selectedGroupIdsByAssetClass[_selectedAssetClass] = newGroup.id;
         _instruments = List<_Instrument>.of(newGroup.instruments);
+        _selectedInstrument =
+            _instrumentSelectionForGroup(newGroup, _selectedInstrument);
       });
       _saveWatchlistGroups();
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('$groupName 그룹을 만들고 현재 종목을 담았습니다.')),
+        SnackBar(content: Text('$groupName 그룹을 비워 둔 상태로 만들었습니다.')),
       );
     } finally {
       controller.dispose();
@@ -735,18 +760,13 @@ class _TradingScreenState extends ConsumerState<TradingScreen> {
       _selectedGroupId = nextGroup.id;
       _selectedGroupIdsByAssetClass[_selectedAssetClass] = nextGroup.id;
       _instruments = List<_Instrument>.of(nextGroup.instruments);
-      _selectedInstrument = _instruments.first;
+      _selectedInstrument =
+          _instrumentSelectionForGroup(nextGroup, _selectedInstrument);
     });
     _saveWatchlistGroups();
   }
 
   void _removeInstrumentFromSelectedGroup(_Instrument instrument) {
-    if (_instruments.length <= 1) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('그룹에는 최소 1개 종목이 필요합니다.')));
-      return;
-    }
     final nextInstruments = [
       for (final item in _instruments)
         if (item.assetKey != instrument.assetKey) item,
@@ -754,7 +774,8 @@ class _TradingScreenState extends ConsumerState<TradingScreen> {
     setState(() {
       _replaceSelectedGroupInstruments(nextInstruments);
       if (_selectedInstrument.assetKey == instrument.assetKey) {
-        _selectedInstrument = nextInstruments.first;
+        _selectedInstrument =
+            _instrumentSelectionFor(_selectedAssetClass, nextInstruments);
       }
     });
     _saveWatchlistGroups();
@@ -2002,9 +2023,8 @@ class _OrderTicketTabState extends ConsumerState<_OrderTicketTab> {
       livePrice: livePrice,
       referencePriceReady: referencePriceReady,
     );
-    final sideColor = _side == _TradeSide.buy
-        ? MetaServerColors.green
-        : MetaServerColors.danger;
+    final sideColor =
+        _side == _TradeSide.buy ? MetaServerColors.buy : MetaServerColors.sell;
 
     if (isCrypto) {
       return _buildUpbitTicket(
@@ -2090,8 +2110,8 @@ class _OrderTicketTabState extends ConsumerState<_OrderTicketTab> {
                             return Colors.white;
                           }
                           return _side == _TradeSide.buy
-                              ? MetaServerColors.green
-                              : MetaServerColors.danger;
+                              ? MetaServerColors.buy
+                              : MetaServerColors.sell;
                         }),
                       ),
                     ),
@@ -2321,6 +2341,17 @@ class _OrderTicketTabState extends ConsumerState<_OrderTicketTab> {
                         setState(() => _side = side);
                         widget.onSideChanged(side);
                       },
+                      style: ButtonStyle(
+                        backgroundColor:
+                            WidgetStateProperty.resolveWith((states) {
+                          if (!states.contains(WidgetState.selected)) {
+                            return Colors.white;
+                          }
+                          return _side == _TradeSide.buy
+                              ? MetaServerColors.buy
+                              : MetaServerColors.sell;
+                        }),
+                      ),
                     ),
                     const SizedBox(height: 14),
                     _FieldLabel(
@@ -2856,23 +2887,83 @@ class _ActivityTab extends ConsumerStatefulWidget {
 }
 
 class _ActivityTabState extends ConsumerState<_ActivityTab> {
+  static const List<int> _activityDayOptions = [1, 7, 30, 90, 0];
+
   late Future<KisOrderActivity> _activityFuture;
   String? _workingOrderId;
+  int _activityDays = 30;
+  List<KisOrderActivityItem> _cachedExecutions = const [];
 
   @override
   void initState() {
     super.initState();
+    _cachedExecutions = _loadCachedExecutions();
     _activityFuture = _loadActivity();
   }
 
-  Future<KisOrderActivity> _loadActivity() {
-    return ref.read(tradingRepositoryProvider).loadKisOrderActivity();
+  Future<KisOrderActivity> _loadActivity() async {
+    final activity = await ref
+        .read(tradingRepositoryProvider)
+        .loadKisOrderActivity(days: _activityDays == 0 ? 90 : _activityDays);
+    _rememberExecutions(activity.executions);
+    return activity;
   }
 
   void _refreshActivity() {
     setState(() {
       _activityFuture = _loadActivity();
     });
+  }
+
+  void _changeActivityDays(int days) {
+    if (days == _activityDays) return;
+    setState(() {
+      _activityDays = days;
+      _activityFuture = _loadActivity();
+    });
+  }
+
+  List<KisOrderActivityItem> _loadCachedExecutions() {
+    final saved = loadTradingLocalValue(_executionHistoryStorageKey);
+    if (saved == null || saved.trim().isEmpty) return const [];
+    try {
+      final decoded = jsonDecode(saved);
+      if (decoded is! List) return const [];
+      final items = [
+        for (final item in decoded)
+          if (item is Map)
+            KisOrderActivityItem.fromJson(Map<String, dynamic>.from(item)),
+      ];
+      return _sortedExecutions(items).take(_executionHistoryLimit).toList();
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  void _rememberExecutions(List<KisOrderActivityItem> executions) {
+    if (executions.isEmpty) return;
+    final merged = _mergeExecutions(_cachedExecutions, executions)
+        .take(_executionHistoryLimit)
+        .toList();
+    saveTradingLocalValue(
+      _executionHistoryStorageKey,
+      jsonEncode([for (final item in merged) item.toJson()]),
+    );
+    if (!mounted) return;
+    setState(() => _cachedExecutions = merged);
+  }
+
+  List<KisOrderActivityItem> _visibleExecutions(
+    List<KisOrderActivityItem> fetchedExecutions,
+  ) {
+    final merged = _mergeExecutions(_cachedExecutions, fetchedExecutions);
+    if (_activityDays == 0) return merged;
+    final cutoff = _nowInKst().subtract(Duration(days: _activityDays - 1));
+    final cutoffDate = DateTime(cutoff.year, cutoff.month, cutoff.day);
+    return [
+      for (final item in merged)
+        if (_executionDate(item)?.isBefore(cutoffDate) != true) item,
+    ];
   }
 
   Future<void> _withOrderAction(
@@ -2960,14 +3051,16 @@ class _ActivityTabState extends ConsumerState<_ActivityTab> {
         builder: (context, snapshot) {
           final activity = snapshot.data;
           final loading = snapshot.connectionState == ConnectionState.waiting &&
-              activity == null;
+              activity == null &&
+              _cachedExecutions.isEmpty;
           final errorMessage = snapshot.hasError && activity == null
               ? apiFailureMessage(snapshot.error!) ?? snapshot.error.toString()
               : null;
           final openOrderItems =
               activity?.openOrders ?? const <KisOrderActivityItem>[];
-          final executionItems =
-              activity?.executions ?? const <KisOrderActivityItem>[];
+          final executionItems = _visibleExecutions(
+            activity?.executions ?? const <KisOrderActivityItem>[],
+          );
 
           return LayoutBuilder(
             builder: (context, constraints) {
@@ -3001,13 +3094,26 @@ class _ActivityTabState extends ConsumerState<_ActivityTab> {
               final executions = _Panel(
                 title: '체결 내역',
                 icon: Icons.fact_check_outlined,
-                child: _ActivityPanelBody(
-                  loading: loading,
-                  errorMessage: errorMessage,
-                  emptyMessage: '오늘 조회된 체결 내역이 없습니다.',
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    for (final execution in executionItems)
-                      _ExecutionTile(execution: execution),
+                    _ActivityRangeSelector(
+                      days: _activityDays,
+                      options: _activityDayOptions,
+                      enabled: !loading,
+                      onChanged: _changeActivityDays,
+                    ),
+                    const SizedBox(height: 12),
+                    _ActivityPanelBody(
+                      loading: loading,
+                      errorMessage:
+                          executionItems.isEmpty ? errorMessage : null,
+                      emptyMessage: _activityEmptyMessage(_activityDays),
+                      children: [
+                        for (final execution in executionItems)
+                          _ExecutionTile(execution: execution),
+                      ],
+                    ),
                   ],
                 ),
               );
@@ -3029,6 +3135,52 @@ class _ActivityTabState extends ConsumerState<_ActivityTab> {
             },
           );
         },
+      ),
+    );
+  }
+}
+
+class _ActivityRangeSelector extends StatelessWidget {
+  const _ActivityRangeSelector({
+    required this.days,
+    required this.options,
+    required this.enabled,
+    required this.onChanged,
+  });
+
+  final int days;
+  final List<int> options;
+  final bool enabled;
+  final ValueChanged<int> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return SegmentedButton<int>(
+      segments: [
+        for (final option in options)
+          ButtonSegment<int>(
+            value: option,
+            label: Text(
+              option == 0
+                  ? '전체'
+                  : option == 1
+                      ? '오늘'
+                      : '$option일',
+            ),
+          ),
+      ],
+      selected: {days},
+      onSelectionChanged: enabled
+          ? (selection) {
+              if (selection.isNotEmpty) onChanged(selection.first);
+            }
+          : null,
+      showSelectedIcon: false,
+      style: ButtonStyle(
+        visualDensity: VisualDensity.compact,
+        textStyle: WidgetStateProperty.all(
+          const TextStyle(fontSize: 12, fontWeight: FontWeight.w800),
+        ),
       ),
     );
   }
@@ -3093,13 +3245,10 @@ class _UpbitAmendOrderDialogState extends State<_UpbitAmendOrderDialog> {
   @override
   void initState() {
     super.initState();
-    final price = widget.order.price > 0
-        ? widget.order.price
-        : widget.order.averagePrice;
+    final price =
+        widget.order.price > 0 ? widget.order.price : widget.order.averagePrice;
     _priceController = TextEditingController(
-      text: price > 0
-          ? formatDecimalInputText(price, maxDecimalPlaces: 8)
-          : '',
+      text: price > 0 ? formatDecimalInputText(price, maxDecimalPlaces: 8) : '',
     );
     _quantityController = TextEditingController(
       text: widget.order.remainingQuantity > 0
@@ -3405,6 +3554,7 @@ class _AccountSummaryPanel extends StatelessWidget {
         children: [
           Wrap(
             alignment: WrapAlignment.spaceBetween,
+            spacing: 16,
             runSpacing: 12,
             children: [
               Column(
@@ -4037,7 +4187,7 @@ class _UpbitOrderbookPanel extends StatelessWidget {
                               child: Text(
                                 _won(unit.bidPrice),
                                 style: const TextStyle(
-                                  color: MetaServerColors.green,
+                                  color: MetaServerColors.fall,
                                   fontWeight: FontWeight.w900,
                                 ),
                               ),
@@ -4064,7 +4214,7 @@ class _UpbitOrderbookPanel extends StatelessWidget {
                                 _won(unit.askPrice),
                                 textAlign: TextAlign.right,
                                 style: const TextStyle(
-                                  color: MetaServerColors.danger,
+                                  color: MetaServerColors.rise,
                                   fontWeight: FontWeight.w900,
                                 ),
                               ),
@@ -4677,7 +4827,7 @@ class _InstrumentDetailPanel extends StatelessWidget {
                   icon: const Icon(Icons.add_chart_rounded),
                   label: const Text('매수'),
                   style: ElevatedButton.styleFrom(
-                    backgroundColor: MetaServerColors.green,
+                    backgroundColor: MetaServerColors.buy,
                   ),
                 ),
               ),
@@ -4688,7 +4838,7 @@ class _InstrumentDetailPanel extends StatelessWidget {
                   icon: const Icon(Icons.sell_outlined),
                   label: const Text('매도'),
                   style: OutlinedButton.styleFrom(
-                    foregroundColor: MetaServerColors.danger,
+                    foregroundColor: MetaServerColors.sell,
                   ),
                 ),
               ),
@@ -4889,8 +5039,8 @@ class _SummaryMetric extends StatelessWidget {
     final color = positive == null
         ? Colors.white
         : positive == true
-            ? MetaServerColors.mint
-            : const Color(0xFFFF8A8A);
+            ? MetaServerColors.riseOnDark
+            : MetaServerColors.fallOnDark;
     return Container(
       constraints: const BoxConstraints(minWidth: 126),
       padding: const EdgeInsets.all(12),
@@ -4940,8 +5090,7 @@ class _HoldingTile extends StatelessWidget {
     final profitRate = holding.profitLossRate;
     final quantity = _formatQuantity(holding.quantity);
     final isCrypto = holding.assetClass == 'crypto';
-    final quantitySuffix =
-        isCrypto ? _cryptoBaseSymbol(holding.symbol) : '주';
+    final quantitySuffix = isCrypto ? _cryptoBaseSymbol(holding.symbol) : '주';
     final currency = holding.currency.trim().isNotEmpty
         ? holding.currency
         : (holding.assetClass == 'overseas_stock' ? 'USD' : 'KRW');
@@ -4972,11 +5121,13 @@ class _HoldingTile extends StatelessWidget {
           label: '매수',
           icon: Icons.add,
           onTap: () => onOrder(instrument, _TradeSide.buy),
+          color: MetaServerColors.buy,
         ),
         _MiniAction(
           label: '매도',
           icon: Icons.remove,
           onTap: () => onOrder(instrument, _TradeSide.sell),
+          color: MetaServerColors.sell,
         ),
       ],
     );
@@ -5009,8 +5160,8 @@ class _InstrumentTile extends StatelessWidget {
         color: !hasQuote
             ? MetaServerColors.ink.withValues(alpha: 0.42)
             : instrument.changeRate >= 0
-                ? MetaServerColors.green
-                : MetaServerColors.danger,
+                ? MetaServerColors.rise
+                : MetaServerColors.fall,
       ),
       title: instrument.name,
       subtitle:
@@ -5046,6 +5197,13 @@ class _InstrumentTile extends StatelessWidget {
           label: '매수',
           icon: Icons.add,
           onTap: () => onOrder(instrument, _TradeSide.buy),
+          color: MetaServerColors.buy,
+        ),
+        _MiniAction(
+          label: '매도',
+          icon: Icons.remove,
+          onTap: () => onOrder(instrument, _TradeSide.sell),
+          color: MetaServerColors.sell,
         ),
         _MiniAction(
           label: '삭제',
@@ -5152,11 +5310,13 @@ class _MiniAction extends StatelessWidget {
     required this.label,
     required this.icon,
     required this.onTap,
+    this.color,
   });
 
   final String label;
   final IconData icon;
   final VoidCallback onTap;
+  final Color? color;
 
   @override
   Widget build(BuildContext context) {
@@ -5169,6 +5329,7 @@ class _MiniAction extends StatelessWidget {
         style: OutlinedButton.styleFrom(
           minimumSize: const Size(74, 38),
           padding: const EdgeInsets.symmetric(horizontal: 10),
+          foregroundColor: color,
         ),
       ),
     );
@@ -5196,8 +5357,8 @@ class _SelectedInstrumentHeader extends StatelessWidget {
             color: !hasQuote
                 ? Colors.white.withValues(alpha: 0.58)
                 : instrument.changeRate >= 0
-                    ? MetaServerColors.mint
-                    : const Color(0xFFFF8A8A),
+                    ? MetaServerColors.riseOnDark
+                    : MetaServerColors.fallOnDark,
           ),
           const SizedBox(width: 12),
           Expanded(
@@ -5265,7 +5426,7 @@ class _Sparkline extends StatelessWidget {
     return CustomPaint(
       painter: _SparklinePainter(
         values: values,
-        color: positive ? MetaServerColors.green : MetaServerColors.danger,
+        color: positive ? MetaServerColors.rise : MetaServerColors.fall,
       ),
       child: const SizedBox.expand(),
     );
@@ -5341,7 +5502,7 @@ class _OrderTile extends StatelessWidget {
     return _DataTile(
       leading: _IconBadge(
         icon: order.isBuy ? Icons.add_chart_rounded : Icons.sell_outlined,
-        color: order.isBuy ? MetaServerColors.green : MetaServerColors.danger,
+        color: order.isBuy ? MetaServerColors.buy : MetaServerColors.sell,
       ),
       title: order.name,
       subtitle:
@@ -5404,21 +5565,23 @@ class _ExecutionTile extends StatelessWidget {
     final sideText = execution.isBuy ? '매수' : '매도';
     final executionPrice =
         execution.averagePrice > 0 ? execution.averagePrice : execution.price;
+    final quantitySuffix =
+        execution.isCrypto ? _cryptoBaseSymbol(execution.symbol) : '주';
+    final quantityPrecision = execution.isCrypto ? 8 : 2;
     return _DataTile(
       leading: _IconBadge(
         icon: Icons.done_all_rounded,
-        color:
-            execution.isBuy ? MetaServerColors.green : MetaServerColors.danger,
+        color: execution.isBuy ? MetaServerColors.buy : MetaServerColors.sell,
       ),
       title: execution.name,
       subtitle:
-          '${execution.symbol} · $sideText · ${_formatOrderTime(execution.orderTime)}',
+          '${execution.symbol} · $sideText · ${_formatOrderDateTime(execution.orderDate, execution.orderTime)}',
       trailing: Column(
         crossAxisAlignment: CrossAxisAlignment.end,
         mainAxisSize: MainAxisSize.min,
         children: [
           Text(
-            '${_formatQuantity(execution.filledQuantity)}주',
+            '${_formatQuantity(execution.filledQuantity, decimalPlaces: quantityPrecision)}$quantitySuffix',
             style: const TextStyle(fontWeight: FontWeight.w900),
           ),
           const SizedBox(height: 4),
@@ -5446,8 +5609,8 @@ class _ChangeText extends StatelessWidget {
   Widget build(BuildContext context) {
     final positive = value >= 0;
     final color = positive
-        ? (onDark ? MetaServerColors.mint : MetaServerColors.green)
-        : (onDark ? const Color(0xFFFF8A8A) : MetaServerColors.danger);
+        ? (onDark ? MetaServerColors.riseOnDark : MetaServerColors.rise)
+        : (onDark ? MetaServerColors.fallOnDark : MetaServerColors.fall);
     return Text(
       '${positive ? '+' : ''}${value.toStringAsFixed(2)}%',
       style: TextStyle(color: color, fontSize: 12, fontWeight: FontWeight.w900),
@@ -5475,8 +5638,8 @@ class _MarketStatusRow extends StatelessWidget {
       valueColor: change == '--'
           ? MetaServerColors.ink.withValues(alpha: 0.62)
           : positive
-              ? MetaServerColors.green
-              : MetaServerColors.danger,
+              ? MetaServerColors.rise
+              : MetaServerColors.fall,
     );
   }
 }
@@ -5848,7 +6011,6 @@ class _WatchlistGroup {
       for (final item in rawInstruments)
         if (item is Map) _Instrument.fromJson(Map<String, Object?>.from(item)),
     ].whereType<_Instrument>().toList();
-    if (instruments.isEmpty) return const [];
 
     final assetClassValue = json['asset_class'];
     if (assetClassValue is String && assetClassValue.trim().isNotEmpty) {
@@ -5857,7 +6019,6 @@ class _WatchlistGroup {
         for (final instrument in instruments)
           if (instrument.assetClass == assetClass) instrument,
       ];
-      if (filtered.isEmpty) return const [];
       return [
         _WatchlistGroup(
           id: id,
@@ -6531,7 +6692,8 @@ _Instrument _instrumentForHolding(
 
 KisHolding _kisHoldingFromUpbit(UpbitHolding holding) {
   return KisHolding(
-    symbol: holding.market.isNotEmpty ? holding.market : 'KRW-${holding.symbol}',
+    symbol:
+        holding.market.isNotEmpty ? holding.market : 'KRW-${holding.symbol}',
     name: holding.name.isNotEmpty ? holding.name : holding.symbol,
     quantity: holding.quantity,
     assetClass: 'crypto',
@@ -6616,6 +6778,85 @@ String _formatOrderTime(String? value) {
     return '${digits.substring(0, 2)}:${digits.substring(2, 4)}:${digits.substring(4, 6)}';
   }
   return value?.trim().isNotEmpty == true ? value!.trim() : '--';
+}
+
+String _formatOrderDateTime(String? date, String? time) {
+  final dateDigits = date?.replaceAll(RegExp(r'[^0-9]'), '') ?? '';
+  final displayTime = _formatOrderTime(time);
+  if (dateDigits.length >= 8) {
+    return '${dateDigits.substring(4, 6)}.${dateDigits.substring(6, 8)} $displayTime';
+  }
+  return displayTime;
+}
+
+String _activityEmptyMessage(int days) {
+  if (days == 0) return '저장된 체결 내역이 없습니다.';
+  if (days <= 1) return '오늘 조회된 체결 내역이 없습니다.';
+  return '최근 $days일 체결 내역이 없습니다.';
+}
+
+List<KisOrderActivityItem> _mergeExecutions(
+  Iterable<KisOrderActivityItem> existing,
+  Iterable<KisOrderActivityItem> incoming,
+) {
+  final byKey = <String, KisOrderActivityItem>{};
+  for (final item in existing) {
+    byKey[_executionCacheKey(item)] = item;
+  }
+  for (final item in incoming) {
+    byKey[_executionCacheKey(item)] = item;
+  }
+  return _sortedExecutions(byKey.values);
+}
+
+List<KisOrderActivityItem> _sortedExecutions(
+  Iterable<KisOrderActivityItem> items,
+) {
+  final sorted = List<KisOrderActivityItem>.of(items);
+  sorted.sort((a, b) => _executionSortKey(b).compareTo(_executionSortKey(a)));
+  return sorted;
+}
+
+String _executionSortKey(KisOrderActivityItem item) {
+  final orderDate = item.orderDate ?? '';
+  final orderTime = item.orderTime ?? '';
+  final orderNo = item.orderNo ?? '';
+  return '$orderDate$orderTime$orderNo${item.symbol}${item.filledQuantity}';
+}
+
+String _executionCacheKey(KisOrderActivityItem item) {
+  final orderNo = item.orderNo?.trim() ?? '';
+  if (orderNo.isNotEmpty) {
+    return [
+      item.broker,
+      item.market,
+      item.symbol,
+      orderNo,
+      item.orderDate ?? '',
+      item.orderTime ?? '',
+      item.filledQuantity.toString(),
+    ].join('|');
+  }
+  return [
+    item.broker,
+    item.market,
+    item.symbol,
+    item.side,
+    item.orderDate ?? '',
+    item.orderTime ?? '',
+    item.filledQuantity.toString(),
+    item.averagePrice.toString(),
+  ].join('|');
+}
+
+DateTime? _executionDate(KisOrderActivityItem item) {
+  final digits = item.orderDate?.replaceAll(RegExp(r'[^0-9]'), '') ?? '';
+  if (digits.length < 8) return null;
+  final year = int.tryParse(digits.substring(0, 4));
+  final month = int.tryParse(digits.substring(4, 6));
+  final day = int.tryParse(digits.substring(6, 8));
+  if (year == null || month == null || day == null) return null;
+  return DateTime(year, month, day);
 }
 
 String _orderNoSuffix(String? orderNo) {

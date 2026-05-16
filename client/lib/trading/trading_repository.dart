@@ -36,7 +36,7 @@ class TradingRepository {
     return KisMarketStatus.fromJson(data);
   }
 
-  Future<KisOrderActivity> loadKisOrderActivity({int days = 1}) async {
+  Future<KisOrderActivity> loadKisOrderActivity({int days = 30}) async {
     final data = await _apiClient.getJson('/trading/order-activity?days=$days');
     return KisOrderActivity.fromJson(data);
   }
@@ -502,12 +502,16 @@ class KisOrderActivity {
   const KisOrderActivity({
     required this.environment,
     required this.accountNoMasked,
+    required this.startDate,
+    required this.endDate,
     required this.openOrders,
     required this.executions,
   });
 
   final String environment;
   final String accountNoMasked;
+  final String startDate;
+  final String endDate;
   final List<KisOrderActivityItem> openOrders;
   final List<KisOrderActivityItem> executions;
 
@@ -515,6 +519,8 @@ class KisOrderActivity {
     return KisOrderActivity(
       environment: json['environment']?.toString() ?? 'paper',
       accountNoMasked: json['account_no_masked']?.toString() ?? '',
+      startDate: json['start_date']?.toString() ?? '',
+      endDate: json['end_date']?.toString() ?? '',
       openOrders: _activityItems(json['open_orders']),
       executions: _activityItems(json['executions']),
     );
@@ -561,7 +567,30 @@ class KisOrderActivityItem {
   final String? orderKindName;
 
   bool get isBuy => side == 'buy';
-  bool get isCrypto => assetClass == 'crypto' || broker.toUpperCase() == 'UPBIT';
+  bool get isCrypto =>
+      assetClass == 'crypto' || broker.toUpperCase() == 'UPBIT';
+
+  Map<String, Object?> toJson() {
+    return {
+      'broker': broker,
+      'asset_class': assetClass,
+      'market': market,
+      'currency': currency,
+      'symbol': symbol,
+      'name': name,
+      'side': side,
+      'status': status,
+      'quantity': quantity,
+      'filled_quantity': filledQuantity,
+      'remaining_quantity': remainingQuantity,
+      'price': price,
+      'average_price': averagePrice,
+      'order_date': orderDate,
+      'order_time': orderTime,
+      'order_no': orderNo,
+      'order_kind_name': orderKindName,
+    };
+  }
 
   factory KisOrderActivityItem.fromJson(Map<String, dynamic> json) {
     return KisOrderActivityItem(

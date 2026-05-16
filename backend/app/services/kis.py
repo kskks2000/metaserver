@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import hashlib
+import json
+import os
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal, InvalidOperation
 from functools import lru_cache
+from pathlib import Path
 from threading import Lock
+from time import sleep
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -119,12 +124,17 @@ class KisClient:
     NXT_MAIN_END = time(15, 20)
     NXT_AFTER_ORDER_START = time(15, 30)
     NXT_AFTER_END = time(20, 0)
+    TOKEN_REFRESH_MARGIN = timedelta(minutes=10)
+    TOKEN_CACHE_MIN_TTL = timedelta(minutes=1)
+    REQUEST_RETRY_BACKOFF_SECONDS = 0.35
+    TRANSIENT_STATUS_CODES = {408, 429, 500, 502, 503, 504}
 
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
         self._client = httpx.Client(timeout=settings.kis_timeout_seconds)
         self._tokens: dict[BrokerEnvironment, KisToken] = {}
         self._token_lock = Lock()
+        self._client_lock = Lock()
 
     def status(self) -> KisConnectionStatusResponse:
         environment = BrokerEnvironment(self._settings.kis_default_environment)
@@ -140,6 +150,22 @@ class KisClient:
                 message=str(exc),
             )
 
+        try:
+            token = self._access_token(credentials)
+            message = f"KIS token is ready until {token.expires_at:%Y-%m-%d %H:%M:%S}."
+        except KisApiError as exc:
+            return KisConnectionStatusResponse(
+                configured=False,
+                default_environment=environment,
+                live_trading_enabled=self._settings.kis_live_trading_enabled,
+                order_protocol=self._settings.kis_order_protocol,
+                regular_session_only=self._settings.kis_regular_session_only,
+                account_no_masked=self._mask_full_account(credentials),
+                product_code=credentials.product_code,
+                base_url=credentials.base_url,
+                message=f"KIS token check failed: {exc}",
+            )
+
         return KisConnectionStatusResponse(
             configured=True,
             default_environment=environment,
@@ -149,6 +175,7 @@ class KisClient:
             account_no_masked=self._mask_full_account(credentials),
             product_code=credentials.product_code,
             base_url=credentials.base_url,
+            message=message,
         )
 
     def quote_domestic_stock(
@@ -902,75 +929,300 @@ class KisClient:
         include_hashkey: bool = False,
         tr_cont: str = "",
     ) -> tuple[dict[str, Any], httpx.Headers]:
-        token = self._access_token(credentials)
-        headers = self._headers(credentials, token.access_token, tr_id)
-        headers["tr_cont"] = tr_cont
-        if include_hashkey and json_payload is not None:
-            headers["hashkey"] = self._hashkey(credentials, token.access_token, json_payload)
+        last_error: KisApiError | None = None
+        for attempt in range(2):
+            token = self._access_token(credentials)
+            headers = self._headers(credentials, token.access_token, tr_id)
+            headers["tr_cont"] = tr_cont
+            if include_hashkey and json_payload is not None:
+                headers["hashkey"] = self._hashkey(
+                    credentials,
+                    token.access_token,
+                    json_payload,
+                )
 
-        try:
-            response = self._client.request(
-                method,
-                f"{credentials.base_url}{path}",
-                headers=headers,
-                params=params,
-                json=json_payload,
-            )
-        except httpx.HTTPError as exc:
-            raise KisApiError(f"KIS request failed: {exc}") from exc
+            try:
+                response = self._client.request(
+                    method,
+                    f"{credentials.base_url}{path}",
+                    headers=headers,
+                    params=params,
+                    json=json_payload,
+                )
+            except httpx.HTTPError as exc:
+                last_error = KisApiError(f"KIS request failed: {exc}")
+                if self._should_retry_transport(method, attempt):
+                    self._reset_http_client()
+                    sleep(self.REQUEST_RETRY_BACKOFF_SECONDS)
+                    continue
+                raise last_error from exc
 
-        data = self._decode_json(response)
-        if response.status_code != 200:
-            message = data.get("msg1") or response.text
-            raise KisApiError(
-                str(message),
-                status_code=response.status_code,
-                error_code=data.get("msg_cd"),
-                payload=data,
-            )
+            data = self._decode_json(response)
+            if self._is_token_response_error(response.status_code, data):
+                if attempt == 0:
+                    self._invalidate_token(credentials.environment)
+                    sleep(self.REQUEST_RETRY_BACKOFF_SECONDS)
+                    continue
+                raise KisApiError(
+                    self._kis_error_message(data, response.text),
+                    status_code=response.status_code,
+                    error_code=self._kis_error_code(data),
+                    payload=data,
+                )
 
-        if data.get("rt_cd") not in (None, "0"):
-            raise KisApiError(
-                str(data.get("msg1") or "KIS API returned an error."),
-                status_code=response.status_code,
-                error_code=data.get("msg_cd"),
-                payload=data,
-            )
-        return data, response.headers
+            if response.status_code != 200:
+                last_error = KisApiError(
+                    self._kis_error_message(data, response.text),
+                    status_code=response.status_code,
+                    error_code=self._kis_error_code(data),
+                    payload=data,
+                )
+                if self._should_retry_response(method, response.status_code, attempt):
+                    sleep(self.REQUEST_RETRY_BACKOFF_SECONDS)
+                    continue
+                raise last_error
+
+            if data.get("rt_cd") not in (None, "0"):
+                if self._is_token_response_error(response.status_code, data):
+                    if attempt == 0:
+                        self._invalidate_token(credentials.environment)
+                        sleep(self.REQUEST_RETRY_BACKOFF_SECONDS)
+                        continue
+                    raise KisApiError(
+                        self._kis_error_message(data, "KIS API returned an error."),
+                        status_code=response.status_code,
+                        error_code=self._kis_error_code(data),
+                        payload=data,
+                    )
+                last_error = KisApiError(
+                    self._kis_error_message(data, "KIS API returned an error."),
+                    status_code=response.status_code,
+                    error_code=self._kis_error_code(data),
+                    payload=data,
+                )
+                raise last_error
+            return data, response.headers
+
+        assert last_error is not None
+        raise last_error
 
     def _access_token(self, credentials: KisCredentials) -> KisToken:
         now = datetime.now()
         cached = self._tokens.get(credentials.environment)
-        if cached and cached.expires_at > now + timedelta(minutes=1):
+        if self._token_is_usable(cached, min_ttl=self.TOKEN_REFRESH_MARGIN, now=now):
             return cached
 
         with self._token_lock:
+            now = datetime.now()
             cached = self._tokens.get(credentials.environment)
-            if cached and cached.expires_at > datetime.now() + timedelta(minutes=1):
+            if self._token_is_usable(cached, min_ttl=self.TOKEN_REFRESH_MARGIN, now=now):
                 return cached
-
-            response = self._client.post(
-                f"{credentials.base_url}{self.TOKEN_PATH}",
-                headers=self._base_headers(credentials),
-                json={
-                    "grant_type": "client_credentials",
-                    "appkey": credentials.app_key,
-                    "appsecret": credentials.app_secret,
-                },
+            disk_cached = self._load_cached_token(
+                credentials,
+                min_ttl=self.TOKEN_REFRESH_MARGIN,
             )
+            if disk_cached is not None:
+                self._tokens[credentials.environment] = disk_cached
+                return disk_cached
+
+            try:
+                response = self._client.post(
+                    f"{credentials.base_url}{self.TOKEN_PATH}",
+                    headers=self._base_headers(credentials),
+                    json={
+                        "grant_type": "client_credentials",
+                        "appkey": credentials.app_key,
+                        "appsecret": credentials.app_secret,
+                    },
+                )
+            except httpx.HTTPError as exc:
+                fallback = self._load_cached_token(
+                    credentials,
+                    min_ttl=self.TOKEN_CACHE_MIN_TTL,
+                )
+                if fallback is not None:
+                    self._tokens[credentials.environment] = fallback
+                    return fallback
+                raise KisApiError(f"KIS token request failed: {exc}") from exc
+
             data = self._decode_json(response)
             if response.status_code != 200 or "access_token" not in data:
+                fallback = self._load_cached_token(
+                    credentials,
+                    min_ttl=self.TOKEN_CACHE_MIN_TTL,
+                )
+                if self._is_token_issue_rate_limited(data) and fallback is not None:
+                    self._tokens[credentials.environment] = fallback
+                    return fallback
                 raise KisApiError(
-                    str(data.get("msg1") or response.text or "Failed to issue KIS token."),
+                    self._kis_error_message(data, response.text or "Failed to issue KIS token."),
                     status_code=response.status_code,
-                    error_code=data.get("msg_cd"),
+                    error_code=self._kis_error_code(data),
                     payload=data,
                 )
 
             expires_at = self._parse_token_expiry(data)
             token = KisToken(access_token=str(data["access_token"]), expires_at=expires_at)
             self._tokens[credentials.environment] = token
+            self._save_cached_token(credentials, token)
             return token
+
+    def _load_cached_token(
+        self,
+        credentials: KisCredentials,
+        *,
+        min_ttl: timedelta,
+    ) -> KisToken | None:
+        entry = self._read_token_cache().get(credentials.environment.value)
+        if not isinstance(entry, dict):
+            return None
+        if entry.get("app_key_hash") != self._token_app_key_hash(credentials):
+            return None
+        if entry.get("base_url") != credentials.base_url:
+            return None
+        token_text = str(entry.get("access_token") or "")
+        expires_raw = str(entry.get("expires_at") or "")
+        if not token_text or not expires_raw:
+            return None
+        try:
+            expires_at = datetime.fromisoformat(expires_raw)
+        except ValueError:
+            return None
+        token = KisToken(access_token=token_text, expires_at=expires_at)
+        if not self._token_is_usable(token, min_ttl=min_ttl):
+            return None
+        return token
+
+    def _save_cached_token(
+        self,
+        credentials: KisCredentials,
+        token: KisToken,
+    ) -> None:
+        cache = self._read_token_cache()
+        cache[credentials.environment.value] = {
+            "app_key_hash": self._token_app_key_hash(credentials),
+            "base_url": credentials.base_url,
+            "access_token": token.access_token,
+            "expires_at": token.expires_at.isoformat(),
+        }
+        self._write_token_cache(cache)
+
+    def _invalidate_token(self, environment: BrokerEnvironment) -> None:
+        self._tokens.pop(environment, None)
+        cache = self._read_token_cache()
+        if cache.pop(environment.value, None) is not None:
+            self._write_token_cache(cache)
+
+    def _read_token_cache(self) -> dict[str, Any]:
+        path = self._token_cache_path()
+        try:
+            with path.open("r", encoding="utf-8") as handle:
+                data = json.load(handle)
+        except (OSError, ValueError):
+            return {}
+        tokens = data.get("tokens") if isinstance(data, dict) else None
+        return tokens if isinstance(tokens, dict) else {}
+
+    def _write_token_cache(self, tokens: dict[str, Any]) -> None:
+        path = self._token_cache_path()
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            temp_path = path.with_name(f"{path.name}.tmp")
+            with temp_path.open("w", encoding="utf-8") as handle:
+                json.dump({"version": 1, "tokens": tokens}, handle)
+            os.replace(temp_path, path)
+            if os.name != "nt":
+                os.chmod(path, 0o600)
+        except OSError:
+            return
+
+    def _token_cache_path(self) -> Path:
+        return Path(self._settings.kis_token_cache_path).expanduser()
+
+    @staticmethod
+    def _token_is_usable(
+        token: KisToken | None,
+        *,
+        min_ttl: timedelta,
+        now: datetime | None = None,
+    ) -> bool:
+        if token is None:
+            return False
+        current = now or datetime.now()
+        return token.expires_at > current + min_ttl
+
+    @staticmethod
+    def _token_app_key_hash(credentials: KisCredentials) -> str:
+        value = "|".join(
+            [
+                credentials.environment.value,
+                credentials.base_url,
+                credentials.app_key,
+            ]
+        )
+        return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+    def _reset_http_client(self) -> None:
+        with self._client_lock:
+            try:
+                self._client.close()
+            except Exception:
+                pass
+            self._client = httpx.Client(timeout=self._settings.kis_timeout_seconds)
+
+    def _should_retry_transport(self, method: str, attempt: int) -> bool:
+        return attempt == 0 and method.upper() in {"GET", "HEAD"}
+
+    def _should_retry_response(
+        self,
+        method: str,
+        status_code: int,
+        attempt: int,
+    ) -> bool:
+        return (
+            attempt == 0
+            and method.upper() in {"GET", "HEAD"}
+            and status_code in self.TRANSIENT_STATUS_CODES
+        )
+
+    def _is_token_response_error(
+        self,
+        status_code: int,
+        data: dict[str, Any],
+    ) -> bool:
+        code = str(self._kis_error_code(data) or "").upper()
+        message = self._kis_error_message(data, "").lower()
+        if status_code == 401:
+            return True
+        markers = ("token", "authorization", "unauthorized", "expired", "invalid")
+        korean_markers = ("인증", "접근토큰", "토큰", "만료", "권한")
+        looks_like_token_error = (
+            code.startswith("EGW001")
+            or any(marker in message for marker in markers)
+            or any(marker in message for marker in korean_markers)
+        )
+        return status_code in {200, 403} and looks_like_token_error
+
+    def _is_token_issue_rate_limited(self, data: dict[str, Any]) -> bool:
+        code = str(self._kis_error_code(data) or "").upper()
+        message = self._kis_error_message(data, "")
+        return code == "EGW00133" or "1분당 1회" in message
+
+    @staticmethod
+    def _kis_error_code(data: dict[str, Any]) -> str | None:
+        value = data.get("msg_cd") or data.get("error_code")
+        return str(value) if value is not None else None
+
+    @staticmethod
+    def _kis_error_message(data: dict[str, Any], fallback: str) -> str:
+        value = (
+            data.get("msg1")
+            or data.get("error_description")
+            or data.get("message")
+            or fallback
+            or "KIS API returned an error."
+        )
+        return str(value)
 
     def _hashkey(
         self,

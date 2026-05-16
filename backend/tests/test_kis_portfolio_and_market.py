@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from tempfile import TemporaryDirectory
 import unittest
 
+import httpx
+
 from app.core.config import Settings
-from app.schemas.trading import AssetClass
+from app.schemas.trading import AssetClass, BrokerEnvironment
 from app.services.kis import KisClient
 
 
@@ -176,8 +179,102 @@ class KisPortfolioAndMarketTest(unittest.TestCase):
 
         status = self.client.market_status()
 
-        self.assertEqual(status.items[-1].label, "USD/KRW")
-        self.assertIsNone(status.items[-1].value)
+        self.assertEqual(
+            [item.label for item in status.items],
+            ["KOSPI", "KOSDAQ", "USD/KRW"],
+        )
+        self.assertIsNone(status.items[2].value)
+
+    def test_access_token_is_reused_from_disk_cache_after_restart(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            token_calls = 0
+            cache_path = f"{temp_dir}/kis_tokens.json"
+
+            def handler(request: httpx.Request) -> httpx.Response:
+                nonlocal token_calls
+                self.assertEqual(request.url.path, self.client.TOKEN_PATH)
+                token_calls += 1
+                return httpx.Response(
+                    200,
+                    json={
+                        "access_token": "persisted-token",
+                        "access_token_token_expired": "2099-01-01 00:00:00",
+                    },
+                )
+
+            first = self._kis_client(cache_path)
+            first._client.close()
+            first._client = httpx.Client(transport=httpx.MockTransport(handler))
+            first_token = first._access_token(first._credentials(BrokerEnvironment.live))
+            first._client.close()
+
+            second = self._kis_client(cache_path)
+            second._client.close()
+            second._client = httpx.Client(
+                transport=httpx.MockTransport(
+                    lambda request: self.fail("token endpoint should not be called")
+                )
+            )
+            second_token = second._access_token(second._credentials(BrokerEnvironment.live))
+            second._client.close()
+
+            self.assertEqual(first_token.access_token, "persisted-token")
+            self.assertEqual(second_token.access_token, "persisted-token")
+            self.assertEqual(token_calls, 1)
+
+    def test_request_refreshes_token_once_after_token_error(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            issued_tokens = []
+
+            def handler(request: httpx.Request) -> httpx.Response:
+                if request.url.path == self.client.TOKEN_PATH:
+                    token = "old-token" if not issued_tokens else "new-token"
+                    issued_tokens.append(token)
+                    return httpx.Response(
+                        200,
+                        json={
+                            "access_token": token,
+                            "access_token_token_expired": "2099-01-01 00:00:00",
+                        },
+                    )
+
+                authorization = request.headers.get("authorization", "")
+                if authorization == "Bearer old-token":
+                    return httpx.Response(
+                        200,
+                        json={
+                            "rt_cd": "1",
+                            "msg_cd": "EGW00123",
+                            "msg1": "접근토큰 기간이 만료되었습니다.",
+                        },
+                    )
+                return httpx.Response(200, json={"rt_cd": "0", "output": {"ok": True}})
+
+            client = self._kis_client(f"{temp_dir}/kis_tokens.json")
+            client._client.close()
+            client._client = httpx.Client(transport=httpx.MockTransport(handler))
+            data, _ = client._request_with_headers(
+                client._credentials(BrokerEnvironment.live),
+                "GET",
+                "/uapi/test",
+                tr_id="TEST00000000",
+            )
+            client._client.close()
+
+            self.assertEqual(data["output"], {"ok": True})
+            self.assertEqual(issued_tokens, ["old-token", "new-token"])
+
+    def _kis_client(self, token_cache_path: str) -> KisClient:
+        return KisClient(
+            Settings(
+                kis_default_environment="live",
+                kis_app_key="app-key",
+                kis_app_secret="app-secret",
+                kis_account_no="12345678",
+                kis_account_product_code="01",
+                kis_token_cache_path=token_cache_path,
+            )
+        )
 
 
 if __name__ == "__main__":

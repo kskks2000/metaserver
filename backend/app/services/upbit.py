@@ -310,11 +310,11 @@ class UpbitClient:
     def order_activity(
         self,
         *,
-        days: int = 1,
+        days: int = 30,
         market: str = "",
     ) -> TradingOrderActivityResponse:
         today = datetime.now(self.KST).date()
-        safe_days = max(1, min(days, 7))
+        safe_days = max(1, min(days, 90))
         start = today - timedelta(days=safe_days - 1)
         normalized_market = self._normalize_market(market) if market.strip() else ""
 
@@ -335,18 +335,30 @@ class UpbitClient:
                 for item in self._as_list(raw_open)
             )
 
-        closed_params = self._order_list_params(
-            market=normalized_market,
-            limit=100,
-            start_time=self._start_of_day_ms(start),
-            end_time=self._end_of_day_ms(today),
-        )
-        raw_closed = self._authenticated_request(
-            "GET",
-            self.CLOSED_ORDERS_PATH,
-            params=closed_params,
-        )
-        closed_items = [self._activity_item(item) for item in self._as_list(raw_closed)]
+        raw_closed: list[dict[str, Any]] = []
+        chunk_end = today
+        while chunk_end >= start:
+            chunk_start = max(start, chunk_end - timedelta(days=6))
+            for page in range(1, 11):
+                closed_params = self._order_list_params(
+                    market=normalized_market,
+                    limit=100,
+                    page=page,
+                    start_time=self._start_of_day_ms(chunk_start),
+                    end_time=self._end_of_day_ms(chunk_end),
+                )
+                raw_page = self._authenticated_request(
+                    "GET",
+                    self.CLOSED_ORDERS_PATH,
+                    params=closed_params,
+                )
+                page_items = self._as_list(raw_page)
+                raw_closed.extend(page_items)
+                if len(page_items) < 100:
+                    break
+            chunk_end = chunk_start - timedelta(days=1)
+
+        closed_items = [self._activity_item(item) for item in raw_closed]
         executions = [
             item
             for item in closed_items
@@ -616,6 +628,7 @@ class UpbitClient:
         *,
         market: str,
         limit: int,
+        page: int | None = None,
         state: str | None = None,
         start_time: str | None = None,
         end_time: str | None = None,
@@ -624,6 +637,8 @@ class UpbitClient:
             "limit": str(max(1, min(limit, 100))),
             "order_by": "desc",
         }
+        if page is not None:
+            params["page"] = str(max(1, page))
         if market:
             params["market"] = market
         if state:

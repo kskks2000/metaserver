@@ -818,6 +818,16 @@ class _StrategyTabState extends State<_StrategyTab> {
                   setState(() => _signalSide = value.first);
                 },
                 showSelectedIcon: false,
+                style: ButtonStyle(
+                  backgroundColor: WidgetStateProperty.resolveWith((states) {
+                    if (!states.contains(WidgetState.selected)) {
+                      return Colors.white;
+                    }
+                    return _signalSide == 'buy'
+                        ? MetaServerColors.buy
+                        : MetaServerColors.sell;
+                  }),
+                ),
                 segments: const [
                   ButtonSegment(
                     value: 'buy',

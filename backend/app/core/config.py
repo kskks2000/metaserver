@@ -59,6 +59,7 @@ class Settings(BaseSettings):
         "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36"
     )
     kis_timeout_seconds: float = 10.0
+    kis_token_cache_path: str = ".kis_tokens.json"
     kis_include_hashkey: bool = True
     kis_order_protocol: Literal["modern", "legacy"] = "modern"
     kis_live_trading_enabled: bool = False

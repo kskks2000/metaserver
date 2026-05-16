@@ -53,6 +53,7 @@ from app.services.kis import (
     KisOrderValidationError,
     get_kis_client,
 )
+from app.services.market_data import MarketDataError, get_yahoo_market_data_client
 from app.services.upbit import (
     UpbitApiError,
     UpbitConfigurationError,
@@ -399,7 +400,7 @@ def upbit_order_chance(
 @router.get("/upbit/order-activity", response_model=TradingOrderActivityResponse)
 def upbit_order_activity(
     principal: FirebasePrincipal = Depends(get_current_principal),
-    days: int = Query(default=1, ge=1, le=7),
+    days: int = Query(default=30, ge=1, le=90),
     market: str = Query(default="", max_length=20),
 ) -> TradingOrderActivityResponse:
     del principal
@@ -414,7 +415,7 @@ def upbit_order_activity(
 def order_activity(
     principal: FirebasePrincipal = Depends(get_current_principal),
     environment: BrokerEnvironment | None = None,
-    days: int = Query(default=1, ge=1, le=90),
+    days: int = Query(default=30, ge=1, le=90),
     symbol: str = Query(default="", max_length=20),
 ) -> TradingOrderActivityResponse:
     del principal
@@ -483,12 +484,31 @@ def market_status(
         )
         errors.append({"broker": "kis", "message": str(exc)})
 
-    for market in ("KRW-BTC", "KRW-ETH", "KRW-XRP", "KRW-SOL"):
+    for label, symbol in (
+        ("US 30", "YM=F"),
+        ("US Tech 100", "NQ=F"),
+    ):
+        try:
+            response.items.append(
+                get_yahoo_market_data_client().futures_item(label, symbol)
+            )
+        except MarketDataError as exc:
+            errors.append(
+                {"broker": "yahoo", "symbol": symbol, "message": str(exc)}
+            )
+            response.items.append(
+                MarketStatusItem(label=label, raw_output={"error": str(exc)})
+            )
+
+    for label, market in (
+        ("UPBIT ETC", "KRW-ETC"),
+        ("UPBIT ETH", "KRW-ETH"),
+    ):
         try:
             ticker = get_upbit_client().ticker(market)
             response.items.append(
                 MarketStatusItem(
-                    label=f"UPBIT {market.split('-', maxsplit=1)[1]}",
+                    label=label,
                     value=ticker.price,
                     change=ticker.change_price,
                     change_rate=ticker.change_rate,
@@ -497,6 +517,9 @@ def market_status(
             )
         except UpbitApiError as exc:
             errors.append({"broker": "upbit", "market": market, "message": str(exc)})
+            response.items.append(
+                MarketStatusItem(label=label, raw_output={"error": str(exc)})
+            )
 
     if not response.items and errors:
         first = errors[0]
@@ -513,7 +536,7 @@ def market_status(
 def kis_order_activity(
     principal: FirebasePrincipal = Depends(get_current_principal),
     environment: BrokerEnvironment | None = None,
-    days: int = Query(default=1, ge=1, le=90),
+    days: int = Query(default=30, ge=1, le=90),
     symbol: str = Query(default="", max_length=12),
 ) -> KisOrderActivityResponse:
     del principal
