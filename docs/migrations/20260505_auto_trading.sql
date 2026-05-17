@@ -28,6 +28,7 @@ BEGIN
             'dca',
             'momentum',
             'rebalance',
+            'fear_greed',
             'custom'
         );
     END IF;

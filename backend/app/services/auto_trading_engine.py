@@ -20,13 +20,21 @@ from app.schemas.trading import (
     OrderKind,
     OrderSide,
     OverseasStockOrderRequest,
+    UpbitOrderRequest,
 )
+from app.services.fear_greed import FearGreedApiError, get_crypto_fear_greed_index
 from app.services.krx_directory import krx_stock_directory
 from app.services.kis import (
     KisApiError,
     KisConfigurationError,
     KisOrderValidationError,
     get_kis_client,
+)
+from app.services.upbit import (
+    UpbitApiError,
+    UpbitConfigurationError,
+    UpbitOrderValidationError,
+    get_upbit_client,
 )
 
 
@@ -127,7 +135,7 @@ def _evaluate_strategy(
             f"국내주식 종목코드는 6자리 숫자여야 합니다: {symbol}",
         )
         return None
-    if asset_class not in {"domestic_stock", "overseas_stock"}:
+    if asset_class not in {"domestic_stock", "overseas_stock", "crypto"}:
         _event(
             conn,
             user_id,
@@ -146,7 +154,30 @@ def _evaluate_strategy(
     )
 
     try:
-        if asset_class == "overseas_stock":
+        if asset_class == "crypto":
+            if not market:
+                market = "UPBIT"
+            quote = get_upbit_client().ticker(symbol)
+            name = quote.korean_name or str(config.get("name") or symbol)
+            instrument_payload = InstrumentUpsert(
+                asset_class="crypto",
+                asset_code=f"CRYPTO:{market}:{symbol}",
+                market=market,
+                market_code=market,
+                symbol=symbol,
+                name_ko=name,
+                instrument_type=InstrumentType.other,
+                currency=quote.quote_currency,
+                exchange_name=market,
+                quote_currency=quote.quote_currency,
+                price_scale=Decimal("0.00000001"),
+                lot_size=Decimal("0.00000001"),
+                raw_payload={
+                    "source": "auto_trading_engine",
+                    "quote": quote.model_dump(mode="json"),
+                },
+            )
+        elif asset_class == "overseas_stock":
             if not market:
                 market = "NASDAQ"
             quote = client.quote_overseas_stock(
@@ -194,7 +225,13 @@ def _evaluate_strategy(
                     "quote": quote.model_dump(mode="json"),
                 },
             )
-    except (KisConfigurationError, KisOrderValidationError, KisApiError) as exc:
+    except (
+        KisConfigurationError,
+        KisOrderValidationError,
+        KisApiError,
+        UpbitConfigurationError,
+        UpbitApiError,
+    ) as exc:
         _event(
             conn,
             user_id,
@@ -204,6 +241,30 @@ def _evaluate_strategy(
             f"{symbol} 현재가 조회에 실패했습니다: {exc}",
         )
         return None
+
+    if str(strategy.get("strategy_type") or "") == "fear_greed":
+        try:
+            index = get_crypto_fear_greed_index()
+        except FearGreedApiError as exc:
+            _event(
+                conn,
+                user_id,
+                strategy,
+                "error",
+                "fear_greed.failed",
+                f"Fear & Greed Index 조회에 실패했습니다: {exc}",
+            )
+            return None
+        config = {
+            **config,
+            "fear_greed_value": str(index.value),
+            "fear_greed_classification": index.classification,
+            "fear_greed_timestamp": (
+                index.timestamp.isoformat() if index.timestamp is not None else None
+            ),
+            "fear_greed_time_until_update": index.time_until_update,
+            "fear_greed_source": index.source,
+        }
 
     decision = _decision(strategy, config, quote.change_rate)
     if decision is None:
@@ -218,6 +279,11 @@ def _evaluate_strategy(
             portfolio = client.portfolio(environment=environment)
         except (KisConfigurationError, KisApiError):
             portfolio = None
+    elif asset_class == "crypto":
+        try:
+            portfolio = get_upbit_client().portfolio()
+        except (UpbitConfigurationError, UpbitApiError):
+            portfolio = None
 
     sizing = _sizing(
         control,
@@ -226,8 +292,15 @@ def _evaluate_strategy(
         decision["side"],
         portfolio,
         symbol,
-        price_scale=Decimal("0.01") if asset_class == "overseas_stock" else Decimal("1"),
-        allow_market=asset_class == "domestic_stock",
+        price_scale=(
+            Decimal("0.00000001")
+            if asset_class == "crypto"
+            else Decimal("0.01")
+            if asset_class == "overseas_stock"
+            else Decimal("1")
+        ),
+        allow_market=asset_class in {"domestic_stock", "crypto"},
+        allow_fractional=asset_class == "crypto",
     )
     checks = _risk_checks(
         conn=conn,
@@ -235,6 +308,7 @@ def _evaluate_strategy(
         control=control,
         strategy=strategy,
         environment=environment,
+        asset_class=asset_class,
         side=decision["side"],
         expected_amount=sizing["expected_amount"],
         quantity=sizing["quantity"],
@@ -340,38 +414,148 @@ def _decision(
     threshold = abs(_as_decimal(config.get("trigger_change_rate"), Decimal("1")))
     if threshold == 0:
         threshold = Decimal("1")
+    confirmation = abs(_as_decimal(config.get("confirmation_rate"), Decimal("0")))
 
     strategy_type = str(strategy.get("strategy_type") or "condition")
     configured_side = str(config.get("signal_side") or "buy").lower()
     side = OrderSide.sell if configured_side == "sell" else OrderSide.buy
+    effective_threshold = threshold
+    confidence_threshold = threshold
 
     if strategy_type == "dca":
+        max_slices = max(1, _as_int(config.get("max_slices"), 1))
+        stop_loss = abs(_as_decimal(config.get("stop_loss_rate"), Decimal("0")))
         side = OrderSide.buy
         triggered = rate <= -threshold
-        reason = f"하락률 {rate}%가 분할매수 기준 -{threshold}% 이하입니다."
+        if stop_loss > 0 and rate <= -stop_loss:
+            triggered = False
+        reason = (
+            f"하락률 {rate}%가 {max_slices}회 분할매수 1차 기준 "
+            f"-{threshold}% 이하입니다."
+        )
+        if stop_loss > 0:
+            reason += f" 무효화 기준은 -{stop_loss}%입니다."
     elif strategy_type == "momentum":
-        triggered = rate >= threshold if side == OrderSide.buy else rate <= -threshold
+        effective_threshold = threshold + confirmation
+        confidence_threshold = effective_threshold
+        triggered = (
+            rate >= effective_threshold
+            if side == OrderSide.buy
+            else rate <= -effective_threshold
+        )
         operator = "이상" if side == OrderSide.buy else "이하"
-        target = threshold if side == OrderSide.buy else -threshold
-        reason = f"등락률 {rate}%가 모멘텀 기준 {target}% {operator}입니다."
+        target = effective_threshold if side == OrderSide.buy else -effective_threshold
+        reason = (
+            f"등락률 {rate}%가 모멘텀 돌파 기준 {target}% {operator}입니다. "
+            f"기본 {threshold}%, 확인 버퍼 {confirmation}%를 적용했습니다."
+        )
     elif strategy_type == "grid":
-        if configured_side not in {"buy", "sell"}:
+        grid_range = abs(_as_decimal(config.get("grid_range_rate"), Decimal("0")))
+        if configured_side == "buy":
+            side = OrderSide.buy
+            triggered = rate <= -threshold
+        elif configured_side == "sell":
+            side = OrderSide.sell
+            triggered = rate >= threshold
+        else:
             side = OrderSide.buy if rate <= -threshold else OrderSide.sell
-        triggered = abs(rate) >= threshold
-        reason = f"등락률 절대값 {abs(rate)}%가 그리드 기준 {threshold}% 이상입니다."
+            triggered = abs(rate) >= threshold
+        if grid_range > 0 and abs(rate) > grid_range:
+            triggered = False
+        confidence_threshold = threshold
+        reason = (
+            f"등락률 절대값 {abs(rate)}%가 그리드 간격 {threshold}% 이상입니다."
+        )
+        if grid_range > 0:
+            reason += f" 운용 범위 {grid_range}% 안에서만 신호를 생성합니다."
     elif strategy_type == "rebalance":
-        triggered = abs(rate) >= threshold
-        reason = f"비중 재조정 감시 기준 {threshold}% 변동을 충족했습니다."
+        effective_threshold = threshold + confirmation
+        confidence_threshold = effective_threshold
+        if configured_side == "buy":
+            side = OrderSide.buy
+            triggered = rate <= -effective_threshold
+        elif configured_side == "sell":
+            side = OrderSide.sell
+            triggered = rate >= effective_threshold
+        else:
+            side = OrderSide.sell if rate >= effective_threshold else OrderSide.buy
+            triggered = abs(rate) >= effective_threshold
+        reason = (
+            f"비중 재조정 편차 {effective_threshold}% 기준을 충족했습니다. "
+            f"현재 등락률은 {rate}%입니다."
+        )
+    elif strategy_type == "fear_greed":
+        index_value = _as_decimal(config.get("fear_greed_value"), Decimal("-1"))
+        fear_threshold = abs(
+            _as_decimal(
+                config.get("fear_greed_buy_threshold")
+                or config.get("trigger_change_rate"),
+                Decimal("25"),
+            )
+        )
+        greed_threshold = abs(
+            _as_decimal(config.get("fear_greed_sell_threshold"), Decimal("75"))
+        )
+        classification = str(config.get("fear_greed_classification") or "Unknown")
+        source = str(config.get("fear_greed_source") or "alternative.me")
+        if index_value < 0:
+            triggered = False
+            reason = "Fear & Greed Index 값이 없어 신호를 생성하지 않았습니다."
+        elif configured_side == "buy":
+            side = OrderSide.buy
+            triggered = index_value <= fear_threshold
+            reason = (
+                f"Fear & Greed Index {index_value}({classification})가 "
+                f"공포 매수 기준 {fear_threshold} 이하입니다. source={source}"
+            )
+        elif configured_side == "sell":
+            side = OrderSide.sell
+            triggered = index_value >= greed_threshold
+            reason = (
+                f"Fear & Greed Index {index_value}({classification})가 "
+                f"탐욕 매도 기준 {greed_threshold} 이상입니다. source={source}"
+            )
+        else:
+            side = OrderSide.buy if index_value <= fear_threshold else OrderSide.sell
+            triggered = index_value <= fear_threshold or index_value >= greed_threshold
+            reason = (
+                f"Fear & Greed Index {index_value}({classification})가 "
+                f"공포 {fear_threshold} 이하 또는 탐욕 {greed_threshold} 이상 "
+                f"기준을 충족했습니다. source={source}"
+            )
+        confidence_threshold = (
+            fear_threshold
+            if side == OrderSide.buy
+            else max(Decimal("1"), Decimal("100") - greed_threshold)
+        )
     else:
-        triggered = rate >= threshold if side == OrderSide.buy else rate <= -threshold
+        effective_threshold = threshold + confirmation
+        confidence_threshold = effective_threshold
+        triggered = (
+            rate >= effective_threshold
+            if side == OrderSide.buy
+            else rate <= -effective_threshold
+        )
         operator = "이상" if side == OrderSide.buy else "이하"
-        target = threshold if side == OrderSide.buy else -threshold
-        reason = f"조건 등락률 {rate}%가 기준 {target}% {operator}입니다."
+        target = effective_threshold if side == OrderSide.buy else -effective_threshold
+        reason = (
+            f"조건 등락률 {rate}%가 기준 {target}% {operator}입니다. "
+            f"확인 버퍼 {confirmation}%를 적용했습니다."
+        )
 
     if not triggered:
         return None
 
-    ratio = min(Decimal("1"), max(Decimal("0"), abs(rate) / threshold))
+    if confidence_threshold <= 0:
+        confidence_threshold = Decimal("1")
+    if strategy_type == "fear_greed":
+        if side == OrderSide.buy:
+            distance = max(Decimal("0"), fear_threshold - index_value)
+        else:
+            distance = max(Decimal("0"), index_value - greed_threshold)
+        ratio = min(Decimal("1"), max(Decimal("0"), distance / confidence_threshold))
+    else:
+        ratio = min(Decimal("1"), max(Decimal("0"), abs(rate) / confidence_threshold))
     confidence = (Decimal("0.45") + ratio * Decimal("0.5")).quantize(
         Decimal("0.000001")
     )
@@ -388,12 +572,23 @@ def _sizing(
     *,
     price_scale: Decimal = Decimal("1"),
     allow_market: bool = True,
+    allow_fractional: bool = False,
 ) -> dict[str, Any]:
     limit = _order_limit(control, strategy)
     limit = limit or Decimal("0")
+    config = _as_dict(strategy.get("config"))
+    allocation_rate = _as_decimal(config.get("entry_allocation_rate"), Decimal("0"))
+    if allocation_rate <= 0 and str(strategy.get("strategy_type")) in {"dca", "grid"}:
+        max_slices = max(1, _as_int(config.get("max_slices"), 1))
+        allocation_rate = Decimal("100") / Decimal(max_slices)
+    if allocation_rate > 0:
+        allocation_multiplier = min(Decimal("1"), allocation_rate / Decimal("100"))
+        limit = (limit * allocation_multiplier).quantize(Decimal("0.000001"))
 
     if price <= 0 or limit <= 0:
-        quantity = 0
+        quantity: Decimal | int = Decimal("0") if allow_fractional else 0
+    elif allow_fractional:
+        quantity = (limit / price).quantize(price_scale, rounding=ROUND_FLOOR)
     else:
         quantity = int((limit / price).to_integral_value(rounding=ROUND_FLOOR))
 
@@ -401,15 +596,12 @@ def _sizing(
         holding_quantity = _holding_quantity(portfolio, symbol)
         quantity = min(quantity, holding_quantity)
 
-    order_kind = str(_as_dict(strategy.get("config")).get("order_kind") or "limit")
+    order_kind = str(config.get("order_kind") or "limit")
     if order_kind not in {"market", "limit"}:
         order_kind = "limit"
     if not allow_market and order_kind == "market":
         order_kind = "limit"
-    limit_offset = _as_decimal(
-        _as_dict(strategy.get("config")).get("limit_offset_rate"),
-        Decimal("0"),
-    )
+    limit_offset = _as_decimal(config.get("limit_offset_rate"), Decimal("0"))
     order_price = Decimal("0") if order_kind == "market" else price
     if order_kind == "limit" and limit_offset != 0:
         multiplier = Decimal("1") + (limit_offset / Decimal("100"))
@@ -431,9 +623,10 @@ def _risk_checks(
     control: dict[str, Any],
     strategy: dict[str, Any],
     environment: BrokerEnvironment,
+    asset_class: str,
     side: OrderSide,
     expected_amount: Decimal,
-    quantity: int,
+    quantity: Decimal | int,
     portfolio: Any,
     symbol: str,
 ) -> dict[str, Any]:
@@ -504,8 +697,10 @@ def _risk_checks(
         )
         add(
             "live_environment",
-            bool(settings.kis_live_trading_enabled),
-            "서버 KIS_LIVE_TRADING_ENABLED가 true여야 합니다.",
+            bool(settings.upbit_live_trading_enabled)
+            if asset_class == "crypto"
+            else bool(settings.kis_live_trading_enabled),
+            "서버 실전 자동주문 허용 플래그가 true여야 합니다.",
         )
 
     failed = [item["message"] for item in hard if not item["passed"]]
@@ -535,7 +730,7 @@ def _submit_order(
         "asset_class": asset_class,
         "market": market,
         "side": side.value,
-        "quantity": sizing["quantity"],
+        "quantity": str(sizing["quantity"]),
         "order_kind": sizing["order_kind"],
         "price": str(sizing["price"]),
         "expected_amount": str(sizing["expected_amount"]),
@@ -551,14 +746,33 @@ def _submit_order(
         request_payload=request_payload,
     )
     try:
-        if asset_class == "overseas_stock":
+        if asset_class == "crypto":
+            order_kind = OrderKind(sizing["order_kind"])
+            dry_run = environment != BrokerEnvironment.live
+            price = (
+                sizing["expected_amount"]
+                if order_kind == OrderKind.market and side == OrderSide.buy
+                else sizing["price"]
+            )
+            response = get_upbit_client().place_order(
+                UpbitOrderRequest(
+                    side=side,
+                    market=symbol,
+                    quantity=Decimal(str(sizing["quantity"])),
+                    order_kind=order_kind,
+                    price=price,
+                    client_order_id=f"auto-{signal['id']}"[:32],
+                    dry_run=dry_run,
+                )
+            )
+        elif asset_class == "overseas_stock":
             response = get_kis_client().place_overseas_stock_order(
                 OverseasStockOrderRequest(
                     environment=environment,
                     side=side,
                     market_code=market,
                     symbol=symbol,
-                    quantity=sizing["quantity"],
+                    quantity=int(sizing["quantity"]),
                     order_kind=OrderKind.limit,
                     price=sizing["price"],
                     client_order_id=f"auto-{signal['id']}",
@@ -570,7 +784,7 @@ def _submit_order(
                     environment=environment,
                     side=side,
                     symbol=symbol,
-                    quantity=sizing["quantity"],
+                    quantity=int(sizing["quantity"]),
                     order_kind=OrderKind(sizing["order_kind"]),
                     price=None if sizing["order_kind"] == "market" else sizing["price"],
                     client_order_id=f"auto-{signal['id']}",
@@ -582,7 +796,14 @@ def _submit_order(
             status="succeeded",
             response_payload=response.model_dump(mode="json"),
         )
-    except (KisConfigurationError, KisOrderValidationError, KisApiError) as exc:
+    except (
+        KisConfigurationError,
+        KisOrderValidationError,
+        KisApiError,
+        UpbitConfigurationError,
+        UpbitOrderValidationError,
+        UpbitApiError,
+    ) as exc:
         updated = auto_trading.update_action_result(
             conn,
             str(action["id"]),
@@ -664,15 +885,19 @@ def _symbol(config: dict[str, Any]) -> str | None:
     return cleaned or None
 
 
-def _holding_quantity(portfolio: Any, symbol: str) -> int:
+def _holding_quantity(portfolio: Any, symbol: str) -> Decimal:
+    normalized = symbol.upper()
+    base_symbol = normalized.split("-", maxsplit=1)[-1]
     for holding in getattr(portfolio, "holdings", []):
-        if getattr(holding, "symbol", "") == symbol:
+        holding_symbol = str(getattr(holding, "symbol", "")).upper()
+        holding_market = str(getattr(holding, "market", "")).upper()
+        if holding_symbol == normalized or holding_market == normalized or holding_symbol == base_symbol:
             quantity = getattr(holding, "quantity", Decimal("0")) or Decimal("0")
             available = getattr(holding, "orderable_quantity", None)
             if available is not None:
                 quantity = min(quantity, available)
-            return int(Decimal(str(quantity)).to_integral_value(rounding=ROUND_FLOOR))
-    return 0
+            return Decimal(str(quantity))
+    return Decimal("0")
 
 
 def _decorate_signal(

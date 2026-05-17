@@ -55,6 +55,61 @@ class AutoTradingRepository {
     final data = await _apiClient.postJson('/auto-trading/evaluate');
     return AutoEvaluationResult.fromJson(data);
   }
+
+  Future<List<AutoSymbolSearchResult>> searchDomesticSymbols(
+    String query, {
+    int limit = 20,
+  }) async {
+    final data = await _apiClient.getJson(
+      '/trading/domestic-stocks/search?q=${Uri.encodeQueryComponent(query)}&limit=$limit',
+    );
+    return _symbolSearchItems(
+      data['items'],
+      assetClass: 'domestic_stock',
+      fallbackMarket: 'KOSPI',
+    );
+  }
+
+  Future<List<AutoSymbolSearchResult>> searchUpbitMarkets(
+    String query, {
+    int limit = 20,
+  }) async {
+    final data = await _apiClient.getJson(
+      '/trading/upbit/markets/search?q=${Uri.encodeQueryComponent(query)}&limit=$limit',
+    );
+    return _symbolSearchItems(
+      data['items'],
+      assetClass: 'crypto',
+      fallbackMarket: 'UPBIT',
+      upbit: true,
+    );
+  }
+}
+
+List<AutoSymbolSearchResult> _symbolSearchItems(
+  Object? rawItems, {
+  required String assetClass,
+  required String fallbackMarket,
+  bool upbit = false,
+}) {
+  if (rawItems is! List) return const [];
+  return [
+    for (final item in rawItems)
+      if (item is Map<String, dynamic>)
+        AutoSymbolSearchResult.fromJson(
+          item,
+          assetClass: assetClass,
+          fallbackMarket: fallbackMarket,
+          upbit: upbit,
+        )
+      else if (item is Map)
+        AutoSymbolSearchResult.fromJson(
+          Map<String, dynamic>.from(item),
+          assetClass: assetClass,
+          fallbackMarket: fallbackMarket,
+          upbit: upbit,
+        ),
+  ];
 }
 
 class AutoTradingOverview {
@@ -274,6 +329,51 @@ class AutoStrategy {
   }
 }
 
+class AutoSymbolSearchResult {
+  const AutoSymbolSearchResult({
+    required this.assetClass,
+    required this.market,
+    required this.symbol,
+    required this.name,
+    required this.category,
+    this.aliases = const [],
+  });
+
+  final String assetClass;
+  final String market;
+  final String symbol;
+  final String name;
+  final String category;
+  final List<String> aliases;
+
+  factory AutoSymbolSearchResult.fromJson(
+    Map<String, dynamic> json, {
+    required String assetClass,
+    required String fallbackMarket,
+    bool upbit = false,
+  }) {
+    if (upbit) {
+      return AutoSymbolSearchResult(
+        assetClass: assetClass,
+        market: fallbackMarket,
+        symbol: json['market']?.toString() ?? '',
+        name: json['korean_name']?.toString() ??
+            json['english_name']?.toString() ??
+            json['market']?.toString() ??
+            '',
+        category: json['english_name']?.toString() ?? 'Upbit KRW',
+      );
+    }
+    return AutoSymbolSearchResult(
+      assetClass: assetClass,
+      market: json['market']?.toString() ?? fallbackMarket,
+      symbol: json['symbol']?.toString() ?? '',
+      name: json['name']?.toString() ?? json['symbol']?.toString() ?? '',
+      category: json['sector']?.toString() ?? '상장종목',
+    );
+  }
+}
+
 class AutoStrategyDraft {
   const AutoStrategyDraft({
     required this.name,
@@ -284,6 +384,16 @@ class AutoStrategyDraft {
     required this.symbol,
     required this.signalSide,
     required this.triggerChangeRate,
+    required this.fearGreedSellThreshold,
+    required this.confirmationRate,
+    required this.takeProfitRate,
+    required this.stopLossRate,
+    required this.entryAllocationRate,
+    required this.maxSlices,
+    required this.gridRangeRate,
+    required this.maxDailyTradeCount,
+    required this.limitOffsetRate,
+    required this.orderKind,
     required this.maxOrderAmount,
     required this.maxDailyLossAmount,
     required this.cooldownSeconds,
@@ -297,12 +407,24 @@ class AutoStrategyDraft {
   final String symbol;
   final String signalSide;
   final String triggerChangeRate;
+  final String fearGreedSellThreshold;
+  final String confirmationRate;
+  final String takeProfitRate;
+  final String stopLossRate;
+  final String entryAllocationRate;
+  final String maxSlices;
+  final String gridRangeRate;
+  final String maxDailyTradeCount;
+  final String limitOffsetRate;
+  final String orderKind;
   final String maxOrderAmount;
   final String maxDailyLossAmount;
   final int cooldownSeconds;
 
   Map<String, dynamic> toJson() {
     final normalizedSymbol = _normalizeStrategySymbol(symbol, assetClass);
+    final parsedDailyTradeCount = int.tryParse(maxDailyTradeCount) ?? 0;
+    final parsedMaxSlices = int.tryParse(maxSlices) ?? 1;
     return {
       'name': name,
       'description': description,
@@ -311,21 +433,43 @@ class AutoStrategyDraft {
       'live_trading_allowed': false,
       'max_order_amount': maxOrderAmount,
       'max_daily_loss_amount': maxDailyLossAmount,
+      'max_daily_trade_count': parsedDailyTradeCount,
       'cooldown_seconds': cooldownSeconds,
       'config': {
         'template': strategyType,
+        'strategy_profile': _strategyProfile(strategyType),
         'ui_created': true,
         'asset_class': assetClass,
         'market': market,
         'symbol': normalizedSymbol,
         'signal_side': signalSide,
         'trigger_change_rate': triggerChangeRate,
-        'order_kind': 'limit',
-        'limit_offset_rate': '0',
+        'fear_greed_buy_threshold': triggerChangeRate,
+        'fear_greed_sell_threshold': fearGreedSellThreshold,
+        'confirmation_rate': confirmationRate,
+        'take_profit_rate': takeProfitRate,
+        'stop_loss_rate': stopLossRate,
+        'entry_allocation_rate': entryAllocationRate,
+        'max_slices': parsedMaxSlices,
+        'grid_range_rate': gridRangeRate,
+        'max_daily_trade_count': parsedDailyTradeCount,
+        'order_kind': orderKind,
+        'limit_offset_rate': limitOffsetRate,
         'quantity_type': 'amount',
       },
     };
   }
+}
+
+String _strategyProfile(String strategyType) {
+  return switch (strategyType) {
+    'momentum' => 'breakout_confirmation',
+    'dca' => 'scaled_pullback_entry',
+    'grid' => 'volatility_grid',
+    'rebalance' => 'allocation_drift',
+    'fear_greed' => 'sentiment_extreme_reversion',
+    _ => 'rule_condition',
+  };
 }
 
 String _normalizeStrategySymbol(String symbol, String assetClass) {

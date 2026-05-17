@@ -1680,7 +1680,7 @@ class _ManualInstrumentForm extends StatelessWidget {
           ),
           const SizedBox(height: 10),
           DropdownButtonFormField<String>(
-            value: market,
+            initialValue: market,
             decoration: const InputDecoration(labelText: '시장'),
             items: [
               for (final market in _marketsForAssetClass(assetClass))

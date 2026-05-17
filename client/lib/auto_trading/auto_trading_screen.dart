@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -40,10 +42,386 @@ List<String> _marketsForAutoAsset(String assetClass) {
 String _symbolHintForAutoAsset(String assetClass) {
   return switch (assetClass) {
     'overseas_stock' => 'AAPL',
-    'crypto' => 'BTC-KRW',
+    'crypto' => 'KRW-BTC',
     _ => '005930',
   };
 }
+
+class _StrategyPreset {
+  const _StrategyPreset({
+    required this.type,
+    required this.label,
+    required this.icon,
+    required this.name,
+    required this.description,
+    required this.triggerLabel,
+    required this.triggerChangeRate,
+    required this.fearGreedSellThreshold,
+    required this.signalSide,
+    required this.maxOrderAmount,
+    required this.maxDailyLossAmount,
+    required this.cooldownSeconds,
+    required this.confirmationRate,
+    required this.takeProfitRate,
+    required this.stopLossRate,
+    required this.entryAllocationRate,
+    required this.maxSlices,
+    required this.gridRangeRate,
+    required this.maxDailyTradeCount,
+    required this.limitOffsetRate,
+    required this.orderKind,
+  });
+
+  final String type;
+  final String label;
+  final IconData icon;
+  final String name;
+  final String description;
+  final String triggerLabel;
+  final String triggerChangeRate;
+  final String fearGreedSellThreshold;
+  final String signalSide;
+  final String maxOrderAmount;
+  final String maxDailyLossAmount;
+  final int cooldownSeconds;
+  final String confirmationRate;
+  final String takeProfitRate;
+  final String stopLossRate;
+  final String entryAllocationRate;
+  final int maxSlices;
+  final String gridRangeRate;
+  final int maxDailyTradeCount;
+  final String limitOffsetRate;
+  final String orderKind;
+}
+
+const _strategyPresets = <String, _StrategyPreset>{
+  'momentum': _StrategyPreset(
+    type: 'momentum',
+    label: '모멘텀',
+    icon: Icons.trending_up_rounded,
+    name: '삼성전자 모멘텀 돌파',
+    description: '추세가 기준 이상 확인될 때 돌파 방향으로 승인 대기 신호를 생성합니다.',
+    triggerLabel: '돌파 등락률(%)',
+    triggerChangeRate: '1.2',
+    fearGreedSellThreshold: '75',
+    signalSide: 'buy',
+    maxOrderAmount: '600000',
+    maxDailyLossAmount: '120000',
+    cooldownSeconds: 75,
+    confirmationRate: '0.2',
+    takeProfitRate: '2.4',
+    stopLossRate: '0.9',
+    entryAllocationRate: '100',
+    maxSlices: 1,
+    gridRangeRate: '0',
+    maxDailyTradeCount: 4,
+    limitOffsetRate: '0.05',
+    orderKind: 'limit',
+  ),
+  'condition': _StrategyPreset(
+    type: 'condition',
+    label: '조건식',
+    icon: Icons.rule_rounded,
+    name: '삼성전자 조건식 감시',
+    description: '등락률 조건과 주문 필터가 동시에 맞을 때 지정 방향 신호를 생성합니다.',
+    triggerLabel: '조건 등락률(%)',
+    triggerChangeRate: '0.8',
+    fearGreedSellThreshold: '75',
+    signalSide: 'buy',
+    maxOrderAmount: '500000',
+    maxDailyLossAmount: '100000',
+    cooldownSeconds: 120,
+    confirmationRate: '0.1',
+    takeProfitRate: '1.5',
+    stopLossRate: '0.7',
+    entryAllocationRate: '100',
+    maxSlices: 1,
+    gridRangeRate: '0',
+    maxDailyTradeCount: 3,
+    limitOffsetRate: '0',
+    orderKind: 'limit',
+  ),
+  'dca': _StrategyPreset(
+    type: 'dca',
+    label: '분할매수',
+    icon: Icons.stacked_line_chart_rounded,
+    name: '삼성전자 하락 분할매수',
+    description: '하락 구간에서 주문 금액을 나눠 진입하고 과도한 반복 주문을 제한합니다.',
+    triggerLabel: '1차 하락률(%)',
+    triggerChangeRate: '1.5',
+    fearGreedSellThreshold: '75',
+    signalSide: 'buy',
+    maxOrderAmount: '900000',
+    maxDailyLossAmount: '150000',
+    cooldownSeconds: 180,
+    confirmationRate: '0',
+    takeProfitRate: '1.8',
+    stopLossRate: '3.0',
+    entryAllocationRate: '34',
+    maxSlices: 3,
+    gridRangeRate: '0',
+    maxDailyTradeCount: 3,
+    limitOffsetRate: '-0.05',
+    orderKind: 'limit',
+  ),
+  'grid': _StrategyPreset(
+    type: 'grid',
+    label: '그리드',
+    icon: Icons.grid_view_rounded,
+    name: '삼성전자 변동성 그리드',
+    description: '설정한 간격 안에서 하락은 매수, 상승은 매도 신호로 대응합니다.',
+    triggerLabel: '그리드 간격(%)',
+    triggerChangeRate: '0.9',
+    fearGreedSellThreshold: '75',
+    signalSide: 'auto',
+    maxOrderAmount: '400000',
+    maxDailyLossAmount: '120000',
+    cooldownSeconds: 60,
+    confirmationRate: '0',
+    takeProfitRate: '1.0',
+    stopLossRate: '2.5',
+    entryAllocationRate: '50',
+    maxSlices: 4,
+    gridRangeRate: '4.5',
+    maxDailyTradeCount: 6,
+    limitOffsetRate: '0',
+    orderKind: 'limit',
+  ),
+  'rebalance': _StrategyPreset(
+    type: 'rebalance',
+    label: '리밸런싱',
+    icon: Icons.balance_rounded,
+    name: '삼성전자 비중 리밸런싱',
+    description: '목표 비중에서 벗어난 변동을 감지해 매수와 매도를 자동 판정합니다.',
+    triggerLabel: '리밸런싱 편차(%)',
+    triggerChangeRate: '2.0',
+    fearGreedSellThreshold: '75',
+    signalSide: 'auto',
+    maxOrderAmount: '500000',
+    maxDailyLossAmount: '120000',
+    cooldownSeconds: 240,
+    confirmationRate: '0.2',
+    takeProfitRate: '0',
+    stopLossRate: '0',
+    entryAllocationRate: '60',
+    maxSlices: 1,
+    gridRangeRate: '0',
+    maxDailyTradeCount: 2,
+    limitOffsetRate: '0',
+    orderKind: 'limit',
+  ),
+  'fear_greed': _StrategyPreset(
+    type: 'fear_greed',
+    label: '공포탐욕',
+    icon: Icons.psychology_alt_rounded,
+    name: '비트코인 Fear & Greed 역추세',
+    description: '시장 공포가 극단으로 내려오면 분할 매수, 과열 탐욕에는 매도 신호를 생성합니다.',
+    triggerLabel: '공포 매수 지수',
+    triggerChangeRate: '25',
+    fearGreedSellThreshold: '75',
+    signalSide: 'auto',
+    maxOrderAmount: '1000000',
+    maxDailyLossAmount: '150000',
+    cooldownSeconds: 300,
+    confirmationRate: '0',
+    takeProfitRate: '6.0',
+    stopLossRate: '8.0',
+    entryAllocationRate: '50',
+    maxSlices: 2,
+    gridRangeRate: '0',
+    maxDailyTradeCount: 2,
+    limitOffsetRate: '-0.1',
+    orderKind: 'limit',
+  ),
+};
+
+_StrategyPreset _strategyPresetFor(String type) {
+  return _strategyPresets[type] ?? _strategyPresets['condition']!;
+}
+
+const _autoPopularDomesticSymbols = [
+  '005930',
+  '000660',
+  '035420',
+  '247540',
+  '005380',
+  '035720',
+];
+const _autoPopularOverseasSymbols = [
+  'AAPL',
+  'MSFT',
+  'NVDA',
+  'TSLA',
+  'GOOGL',
+  'AMZN',
+];
+const _autoPopularCryptoSymbols = [
+  'KRW-BTC',
+  'KRW-ETH',
+  'KRW-SOL',
+  'KRW-XRP',
+];
+
+const _autoSymbolCatalog = <AutoSymbolSearchResult>[
+  AutoSymbolSearchResult(
+    assetClass: 'domestic_stock',
+    market: 'KOSPI',
+    symbol: '005930',
+    name: '삼성전자',
+    category: '반도체',
+    aliases: ['삼전', 'samsung'],
+  ),
+  AutoSymbolSearchResult(
+    assetClass: 'domestic_stock',
+    market: 'KOSPI',
+    symbol: '000660',
+    name: 'SK하이닉스',
+    category: '반도체',
+    aliases: ['하이닉스', 'hynix'],
+  ),
+  AutoSymbolSearchResult(
+    assetClass: 'domestic_stock',
+    market: 'KOSDAQ',
+    symbol: '247540',
+    name: '에코프로비엠',
+    category: '2차전지',
+    aliases: ['에코비엠', 'ecopro bm'],
+  ),
+  AutoSymbolSearchResult(
+    assetClass: 'domestic_stock',
+    market: 'KOSPI',
+    symbol: '035420',
+    name: 'NAVER',
+    category: '인터넷',
+    aliases: ['네이버'],
+  ),
+  AutoSymbolSearchResult(
+    assetClass: 'domestic_stock',
+    market: 'KOSPI',
+    symbol: '005380',
+    name: '현대차',
+    category: '자동차',
+    aliases: ['현대자동차', 'hyundai'],
+  ),
+  AutoSymbolSearchResult(
+    assetClass: 'domestic_stock',
+    market: 'KOSPI',
+    symbol: '035720',
+    name: '카카오',
+    category: '인터넷',
+    aliases: ['kakao'],
+  ),
+  AutoSymbolSearchResult(
+    assetClass: 'domestic_stock',
+    market: 'KOSPI',
+    symbol: '068270',
+    name: '셀트리온',
+    category: '바이오',
+  ),
+  AutoSymbolSearchResult(
+    assetClass: 'domestic_stock',
+    market: 'KOSPI',
+    symbol: '373220',
+    name: 'LG에너지솔루션',
+    category: '2차전지',
+    aliases: ['lg엔솔', 'lges'],
+  ),
+  AutoSymbolSearchResult(
+    assetClass: 'domestic_stock',
+    market: 'KOSDAQ',
+    symbol: '086520',
+    name: '에코프로',
+    category: '2차전지',
+  ),
+  AutoSymbolSearchResult(
+    assetClass: 'domestic_stock',
+    market: 'ETF',
+    symbol: '069500',
+    name: 'KODEX 200',
+    category: 'ETF',
+  ),
+  AutoSymbolSearchResult(
+    assetClass: 'overseas_stock',
+    market: 'NASDAQ',
+    symbol: 'AAPL',
+    name: 'Apple',
+    category: 'Technology',
+    aliases: ['애플', 'iphone'],
+  ),
+  AutoSymbolSearchResult(
+    assetClass: 'overseas_stock',
+    market: 'NASDAQ',
+    symbol: 'MSFT',
+    name: 'Microsoft',
+    category: 'Technology',
+    aliases: ['마이크로소프트'],
+  ),
+  AutoSymbolSearchResult(
+    assetClass: 'overseas_stock',
+    market: 'NASDAQ',
+    symbol: 'NVDA',
+    name: 'NVIDIA',
+    category: 'Semiconductor',
+    aliases: ['엔비디아'],
+  ),
+  AutoSymbolSearchResult(
+    assetClass: 'overseas_stock',
+    market: 'NASDAQ',
+    symbol: 'TSLA',
+    name: 'Tesla',
+    category: 'Automotive',
+    aliases: ['테슬라'],
+  ),
+  AutoSymbolSearchResult(
+    assetClass: 'overseas_stock',
+    market: 'NASDAQ',
+    symbol: 'GOOGL',
+    name: 'Alphabet',
+    category: 'Communication Services',
+    aliases: ['구글', 'google'],
+  ),
+  AutoSymbolSearchResult(
+    assetClass: 'overseas_stock',
+    market: 'NASDAQ',
+    symbol: 'AMZN',
+    name: 'Amazon',
+    category: 'Consumer Discretionary',
+    aliases: ['아마존'],
+  ),
+  AutoSymbolSearchResult(
+    assetClass: 'crypto',
+    market: 'UPBIT',
+    symbol: 'KRW-BTC',
+    name: '비트코인',
+    category: 'Bitcoin',
+    aliases: ['btc', 'bitcoin', '비트'],
+  ),
+  AutoSymbolSearchResult(
+    assetClass: 'crypto',
+    market: 'UPBIT',
+    symbol: 'KRW-ETH',
+    name: '이더리움',
+    category: 'Ethereum',
+    aliases: ['eth', 'ethereum', '이더'],
+  ),
+  AutoSymbolSearchResult(
+    assetClass: 'crypto',
+    market: 'UPBIT',
+    symbol: 'KRW-SOL',
+    name: '솔라나',
+    category: 'Solana',
+    aliases: ['sol', 'solana'],
+  ),
+  AutoSymbolSearchResult(
+    assetClass: 'crypto',
+    market: 'UPBIT',
+    symbol: 'KRW-XRP',
+    name: '리플',
+    category: 'XRP',
+    aliases: ['xrp', 'ripple'],
+  ),
+];
 
 class AutoTradingScreen extends ConsumerStatefulWidget {
   const AutoTradingScreen({super.key});
@@ -647,7 +1025,7 @@ class _DashboardTab extends StatelessWidget {
   }
 }
 
-class _StrategyTab extends StatefulWidget {
+class _StrategyTab extends ConsumerStatefulWidget {
   const _StrategyTab({
     required this.overview,
     required this.saving,
@@ -663,43 +1041,135 @@ class _StrategyTab extends StatefulWidget {
   final ValueChanged<AutoStrategy> onDeleteStrategy;
 
   @override
-  State<_StrategyTab> createState() => _StrategyTabState();
+  ConsumerState<_StrategyTab> createState() => _StrategyTabState();
 }
 
-class _StrategyTabState extends State<_StrategyTab> {
+class _StrategyTabState extends ConsumerState<_StrategyTab> {
   final _nameController = TextEditingController(text: '삼성전자 모멘텀 감시');
   final _descriptionController = TextEditingController(
     text: '실시간 현재가 등락률이 기준을 넘으면 승인 대기 신호를 생성합니다.',
   );
   final _symbolController = TextEditingController(text: '005930');
-  final _triggerController = TextEditingController(text: '1.0');
+  final _triggerController = TextEditingController(text: '1.2');
+  final _fearGreedSellController = TextEditingController(text: '75');
+  final _confirmationController = TextEditingController(text: '0.2');
+  final _takeProfitController = TextEditingController(text: '2.4');
+  final _stopLossController = TextEditingController(text: '0.9');
+  final _allocationController = TextEditingController(text: '100');
+  final _maxSlicesController = TextEditingController(text: '1');
+  final _gridRangeController = TextEditingController(text: '0');
+  final _maxDailyTradesController = TextEditingController(text: '4');
+  final _limitOffsetController = TextEditingController(text: '0.05');
   final _maxOrderController = TextEditingController(
-    text: formatIntegerInputText('500000'),
+    text: formatIntegerInputText('600000'),
   );
   final _maxLossController = TextEditingController(
-    text: formatIntegerInputText('100000'),
+    text: formatIntegerInputText('120000'),
   );
   String _assetClass = 'domestic_stock';
   String _market = 'KOSPI';
   String _strategyType = 'momentum';
   String _signalSide = 'buy';
-  int _cooldownSeconds = 90;
+  String _orderKind = 'limit';
+  int _cooldownSeconds = 75;
+  Timer? _symbolSearchDebounce;
+  List<AutoSymbolSearchResult> _remoteSymbolOptions = const [];
+  bool _symbolSearchLoading = false;
+  String? _symbolSearchError;
 
   @override
   void dispose() {
+    _symbolSearchDebounce?.cancel();
     _nameController.dispose();
     _descriptionController.dispose();
     _symbolController.dispose();
     _triggerController.dispose();
+    _fearGreedSellController.dispose();
+    _confirmationController.dispose();
+    _takeProfitController.dispose();
+    _stopLossController.dispose();
+    _allocationController.dispose();
+    _maxSlicesController.dispose();
+    _gridRangeController.dispose();
+    _maxDailyTradesController.dispose();
+    _limitOffsetController.dispose();
     _maxOrderController.dispose();
     _maxLossController.dispose();
     super.dispose();
+  }
+
+  void _handleSymbolQueryChanged() {
+    final query = _symbolController.text.trim();
+    _symbolSearchDebounce?.cancel();
+    if (!_supportsRemoteSymbolSearch(query)) {
+      if (_remoteSymbolOptions.isNotEmpty ||
+          _symbolSearchLoading ||
+          _symbolSearchError != null) {
+        setState(() {
+          _remoteSymbolOptions = const [];
+          _symbolSearchLoading = false;
+          _symbolSearchError = null;
+        });
+      } else {
+        setState(() {});
+      }
+      return;
+    }
+    setState(() {
+      _symbolSearchLoading = true;
+      _symbolSearchError = null;
+    });
+    _symbolSearchDebounce = Timer(const Duration(milliseconds: 280), () {
+      _loadRemoteSymbolOptions(query);
+    });
+  }
+
+  bool _supportsRemoteSymbolSearch(String query) {
+    if (query.isEmpty) return false;
+    if (_assetClass == 'domestic_stock') return true;
+    return _assetClass == 'crypto' && _market == 'UPBIT';
+  }
+
+  Future<void> _loadRemoteSymbolOptions(String query) async {
+    final assetClass = _assetClass;
+    final market = _market;
+    try {
+      final repository = ref.read(autoTradingRepositoryProvider);
+      final results = assetClass == 'domestic_stock'
+          ? await repository.searchDomesticSymbols(query)
+          : await repository.searchUpbitMarkets(query);
+      if (!mounted ||
+          query != _symbolController.text.trim() ||
+          assetClass != _assetClass ||
+          market != _market) {
+        return;
+      }
+      setState(() {
+        _remoteSymbolOptions = results;
+        _symbolSearchLoading = false;
+        _symbolSearchError = null;
+      });
+    } catch (_) {
+      if (!mounted ||
+          query != _symbolController.text.trim() ||
+          assetClass != _assetClass ||
+          market != _market) {
+        return;
+      }
+      setState(() {
+        _remoteSymbolOptions = const [];
+        _symbolSearchLoading = false;
+        _symbolSearchError = '검색을 불러오지 못했습니다.';
+      });
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     return LayoutBuilder(
       builder: (context, constraints) {
+        final preset = _strategyPresetFor(_strategyType);
+        final symbolOptions = _symbolOptions();
         final builder = _Panel(
           title: '전략 설계',
           icon: Icons.schema_rounded,
@@ -728,6 +1198,8 @@ class _StrategyTabState extends State<_StrategyTab> {
                   setState(() {
                     _assetClass = nextAssetClass;
                     _market = _defaultMarketForAutoAsset(nextAssetClass);
+                    _remoteSymbolOptions = const [];
+                    _symbolSearchError = null;
                     _symbolController.text =
                         _symbolHintForAutoAsset(nextAssetClass);
                   });
@@ -752,49 +1224,43 @@ class _StrategyTabState extends State<_StrategyTab> {
                 ],
               ),
               const SizedBox(height: 12),
-              Row(
+              _ResponsiveGrid(
+                minTileWidth: 190,
                 children: [
-                  Expanded(
-                    child: DropdownButtonFormField<String>(
-                      value: _market,
-                      decoration: const InputDecoration(
-                        labelText: '시장',
-                        prefixIcon: Icon(Icons.account_balance_outlined),
-                      ),
-                      items: [
-                        for (final market in _marketsForAutoAsset(_assetClass))
-                          DropdownMenuItem(value: market, child: Text(market)),
-                      ],
-                      onChanged: (value) {
-                        if (value == null) return;
-                        setState(() => _market = value);
-                      },
+                  DropdownButtonFormField<String>(
+                    key: ValueKey(_market),
+                    initialValue: _market,
+                    decoration: const InputDecoration(
+                      labelText: '시장',
+                      prefixIcon: Icon(Icons.account_balance_outlined),
                     ),
+                    items: [
+                      for (final market in _marketsForAutoAsset(_assetClass))
+                        DropdownMenuItem(value: market, child: Text(market)),
+                    ],
+                    onChanged: (value) {
+                      if (value == null) return;
+                      setState(() => _market = value);
+                    },
                   ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: _TextInput(
-                      controller: _symbolController,
-                      label: '종목코드',
-                      icon: Icons.tag_rounded,
-                      hintText: _symbolHintForAutoAsset(_assetClass),
-                      keyboardType: _assetClass == 'domestic_stock'
-                          ? TextInputType.number
-                          : TextInputType.text,
-                      digitsOnly: _assetClass == 'domestic_stock',
-                    ),
-                  ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: _TextInput(
-                      controller: _triggerController,
-                      label: '등락률 기준(%)',
-                      icon: Icons.percent_rounded,
-                      keyboardType:
-                          const TextInputType.numberWithOptions(decimal: true),
-                    ),
+                  _TextInput(
+                    controller: _symbolController,
+                    label: '종목/코인 검색',
+                    icon: Icons.search_rounded,
+                    hintText: _symbolHintForAutoAsset(_assetClass),
+                    keyboardType: TextInputType.text,
+                    onChanged: (_) => _handleSymbolQueryChanged(),
                   ),
                 ],
+              ),
+              const SizedBox(height: 10),
+              _SymbolSuggestionPicker(
+                options: symbolOptions,
+                query: _symbolController.text,
+                selectedSymbol: _symbolForSave(),
+                loading: _symbolSearchLoading,
+                error: _symbolSearchError,
+                onSelected: _selectSymbol,
               ),
               const SizedBox(height: 14),
               _FieldTitle(icon: Icons.category_outlined, label: '전략 유형'),
@@ -803,88 +1269,74 @@ class _StrategyTabState extends State<_StrategyTab> {
                 spacing: 8,
                 runSpacing: 8,
                 children: [
-                  _ChoiceChip(
-                    label: '모멘텀',
-                    selected: _strategyType == 'momentum',
-                    onSelected: () => setState(() {
-                      _strategyType = 'momentum';
-                    }),
-                  ),
-                  _ChoiceChip(
-                    label: '조건식',
-                    selected: _strategyType == 'condition',
-                    onSelected: () => setState(() {
-                      _strategyType = 'condition';
-                    }),
-                  ),
-                  _ChoiceChip(
-                    label: '분할매수',
-                    selected: _strategyType == 'dca',
-                    onSelected: () => setState(() {
-                      _strategyType = 'dca';
-                      _signalSide = 'buy';
-                    }),
-                  ),
-                  _ChoiceChip(
-                    label: '그리드',
-                    selected: _strategyType == 'grid',
-                    onSelected: () => setState(() {
-                      _strategyType = 'grid';
-                    }),
-                  ),
+                  for (final option in _strategyPresets.values)
+                    _StrategyTypeOption(
+                      preset: option,
+                      selected: _strategyType == option.type,
+                      onSelected: () => _selectStrategyType(option.type),
+                    ),
                 ],
               ),
               const SizedBox(height: 14),
-              _FieldTitle(icon: Icons.swap_vert_rounded, label: '신호 방향'),
+              _StrategyBrief(preset: preset),
+              const SizedBox(height: 14),
+              if (_strategyType != 'dca') ...[
+                _FieldTitle(icon: Icons.swap_vert_rounded, label: '신호 방향'),
+                const SizedBox(height: 8),
+                _directionSelector(
+                  allowAuto: _strategyType == 'grid' ||
+                      _strategyType == 'rebalance' ||
+                      _strategyType == 'fear_greed',
+                ),
+                const SizedBox(height: 14),
+              ],
+              _FieldTitle(icon: Icons.tune_rounded, label: '전략 파라미터'),
               const SizedBox(height: 8),
+              _strategySpecificFields(preset),
+              const SizedBox(height: 14),
+              _FieldTitle(icon: Icons.receipt_long_outlined, label: '주문 설정'),
+              const SizedBox(height: 8),
+              _ResponsiveGrid(
+                minTileWidth: 180,
+                children: [
+                  _TextInput(
+                    controller: _maxOrderController,
+                    label: '1회 주문 한도',
+                    icon: Icons.payments_outlined,
+                    keyboardType: TextInputType.number,
+                  ),
+                  _TextInput(
+                    controller: _maxLossController,
+                    label: '일 손실 한도',
+                    icon: Icons.trending_down_rounded,
+                    keyboardType: TextInputType.number,
+                  ),
+                  _TextInput(
+                    controller: _limitOffsetController,
+                    label: '지정가 보정(%)',
+                    icon: Icons.price_change_outlined,
+                    keyboardType:
+                        const TextInputType.numberWithOptions(decimal: true),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
               SegmentedButton<String>(
-                selected: {_signalSide},
+                selected: {_orderKind},
                 onSelectionChanged: (value) {
-                  setState(() => _signalSide = value.first);
+                  setState(() => _orderKind = value.first);
                 },
                 showSelectedIcon: false,
-                style: ButtonStyle(
-                  backgroundColor: WidgetStateProperty.resolveWith((states) {
-                    if (!states.contains(WidgetState.selected)) {
-                      return Colors.white;
-                    }
-                    return _signalSide == 'buy'
-                        ? MetaServerColors.buy
-                        : MetaServerColors.sell;
-                  }),
-                ),
                 segments: const [
                   ButtonSegment(
-                    value: 'buy',
-                    icon: Icon(Icons.add_shopping_cart_rounded),
-                    label: Text('매수'),
+                    value: 'limit',
+                    icon: Icon(Icons.format_list_numbered_rounded),
+                    label: Text('지정가'),
                   ),
                   ButtonSegment(
-                    value: 'sell',
-                    icon: Icon(Icons.sell_outlined),
-                    label: Text('매도'),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 14),
-              Row(
-                children: [
-                  Expanded(
-                    child: _TextInput(
-                      controller: _maxOrderController,
-                      label: '1회 주문 한도',
-                      icon: Icons.payments_outlined,
-                      keyboardType: TextInputType.number,
-                    ),
-                  ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: _TextInput(
-                      controller: _maxLossController,
-                      label: '일 손실 한도',
-                      icon: Icons.trending_down_rounded,
-                      keyboardType: TextInputType.number,
-                    ),
+                    value: 'market',
+                    icon: Icon(Icons.flash_on_rounded),
+                    label: Text('시장가'),
                   ),
                 ],
               ),
@@ -956,7 +1408,242 @@ class _StrategyTabState extends State<_StrategyTab> {
     );
   }
 
+  Widget _directionSelector({required bool allowAuto}) {
+    final segments = <ButtonSegment<String>>[
+      if (allowAuto)
+        const ButtonSegment(
+          value: 'auto',
+          icon: Icon(Icons.auto_mode_rounded),
+          label: Text('자동'),
+        ),
+      const ButtonSegment(
+        value: 'buy',
+        icon: Icon(Icons.add_shopping_cart_rounded),
+        label: Text('매수'),
+      ),
+      const ButtonSegment(
+        value: 'sell',
+        icon: Icon(Icons.sell_outlined),
+        label: Text('매도'),
+      ),
+    ];
+    return SegmentedButton<String>(
+      selected: {_signalSide},
+      onSelectionChanged: (value) {
+        setState(() => _signalSide = value.first);
+      },
+      showSelectedIcon: false,
+      style: ButtonStyle(
+        backgroundColor: WidgetStateProperty.resolveWith((states) {
+          if (!states.contains(WidgetState.selected)) return Colors.white;
+          return switch (_signalSide) {
+            'sell' => MetaServerColors.sell,
+            'auto' => MetaServerColors.ink,
+            _ => MetaServerColors.buy,
+          };
+        }),
+        foregroundColor: WidgetStateProperty.resolveWith((states) {
+          return states.contains(WidgetState.selected)
+              ? Colors.white
+              : MetaServerColors.ink;
+        }),
+      ),
+      segments: segments,
+    );
+  }
+
+  Widget _strategySpecificFields(_StrategyPreset preset) {
+    final fields = <Widget>[
+      _TextInput(
+        controller: _triggerController,
+        label: preset.triggerLabel,
+        icon: Icons.percent_rounded,
+        keyboardType: const TextInputType.numberWithOptions(decimal: true),
+      ),
+    ];
+
+    if (_strategyType == 'fear_greed') {
+      fields.add(
+        _TextInput(
+          controller: _fearGreedSellController,
+          label: '탐욕 매도 지수',
+          icon: Icons.whatshot_outlined,
+          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+        ),
+      );
+    }
+
+    if (_strategyType == 'momentum' ||
+        _strategyType == 'condition' ||
+        _strategyType == 'rebalance') {
+      fields.add(
+        _TextInput(
+          controller: _confirmationController,
+          label: '확인 버퍼(%)',
+          icon: Icons.verified_outlined,
+          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+        ),
+      );
+    }
+
+    if (_strategyType == 'dca' ||
+        _strategyType == 'grid' ||
+        _strategyType == 'fear_greed') {
+      fields.add(
+        _TextInput(
+          controller: _maxSlicesController,
+          label: _strategyType == 'grid' ? '그리드 레이어' : '분할 횟수',
+          icon: Icons.layers_outlined,
+          keyboardType: TextInputType.number,
+          digitsOnly: true,
+        ),
+      );
+    }
+
+    if (_strategyType == 'grid') {
+      fields.add(
+        _TextInput(
+          controller: _gridRangeController,
+          label: '운용 범위(%)',
+          icon: Icons.open_in_full_rounded,
+          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+        ),
+      );
+    }
+
+    if (_strategyType != 'rebalance') {
+      fields
+        ..add(
+          _TextInput(
+            controller: _takeProfitController,
+            label: '익절 목표(%)',
+            icon: Icons.trending_up_rounded,
+            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+          ),
+        )
+        ..add(
+          _TextInput(
+            controller: _stopLossController,
+            label: '손절/무효화(%)',
+            icon: Icons.shield_outlined,
+            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+          ),
+        );
+    }
+
+    fields
+      ..add(
+        _TextInput(
+          controller: _allocationController,
+          label: '주문 비중(%)',
+          icon: Icons.pie_chart_outline_rounded,
+          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+        ),
+      )
+      ..add(
+        _TextInput(
+          controller: _maxDailyTradesController,
+          label: '일 최대 주문 횟수',
+          icon: Icons.event_available_outlined,
+          keyboardType: TextInputType.number,
+          digitsOnly: true,
+        ),
+      );
+
+    return _ResponsiveGrid(minTileWidth: 180, children: fields);
+  }
+
+  List<AutoSymbolSearchResult> _symbolOptions() {
+    final query = _symbolController.text.trim();
+    final localMatches = _localSymbolOptions(
+      assetClass: _assetClass,
+      market: _market,
+      query: query,
+    );
+    final combined = query.isEmpty
+        ? localMatches
+        : [
+            ..._remoteSymbolOptions,
+            ...localMatches,
+          ];
+    return _uniqueSymbolOptions(combined).take(10).toList(growable: false);
+  }
+
+  void _selectSymbol(AutoSymbolSearchResult option) {
+    setState(() {
+      _assetClass = option.assetClass;
+      _market = option.market;
+      _remoteSymbolOptions = const [];
+      _symbolSearchError = null;
+      _symbolController.text = option.symbol;
+      _symbolController.selection = TextSelection.collapsed(
+        offset: _symbolController.text.length,
+      );
+    });
+  }
+
+  String _symbolForSave() {
+    final raw = _symbolController.text.trim();
+    final match = _exactSymbolMatch(raw);
+    return match?.symbol ?? raw;
+  }
+
+  AutoSymbolSearchResult? _exactSymbolMatch(String raw) {
+    final normalized = raw.trim().toLowerCase();
+    if (normalized.isEmpty) return null;
+    final options = _uniqueSymbolOptions([
+      ..._remoteSymbolOptions,
+      ..._autoSymbolCatalog,
+    ]);
+    for (final option in options) {
+      final words = [
+        option.symbol,
+        option.name,
+        ...option.aliases,
+      ].map((word) => word.toLowerCase());
+      if (option.assetClass == _assetClass &&
+          words.any((word) => word == normalized)) {
+        return option;
+      }
+    }
+    return null;
+  }
+
+  void _selectStrategyType(String type) {
+    setState(() => _applyPreset(type));
+  }
+
+  void _applyPreset(String type) {
+    final preset = _strategyPresetFor(type);
+    _strategyType = preset.type;
+    _nameController.text = preset.name;
+    _descriptionController.text = preset.description;
+    _triggerController.text = preset.triggerChangeRate;
+    _fearGreedSellController.text = preset.fearGreedSellThreshold;
+    _confirmationController.text = preset.confirmationRate;
+    _takeProfitController.text = preset.takeProfitRate;
+    _stopLossController.text = preset.stopLossRate;
+    _allocationController.text = preset.entryAllocationRate;
+    _maxSlicesController.text = preset.maxSlices.toString();
+    _gridRangeController.text = preset.gridRangeRate;
+    _maxDailyTradesController.text = preset.maxDailyTradeCount.toString();
+    _limitOffsetController.text = preset.limitOffsetRate;
+    _maxOrderController.text = formatIntegerInputText(preset.maxOrderAmount);
+    _maxLossController.text = formatIntegerInputText(preset.maxDailyLossAmount);
+    _signalSide = preset.signalSide;
+    _orderKind = preset.orderKind;
+    _cooldownSeconds = preset.cooldownSeconds;
+    if (type == 'fear_greed') {
+      _assetClass = 'crypto';
+      _market = 'UPBIT';
+      _symbolController.text = 'KRW-BTC';
+      _remoteSymbolOptions = const [];
+      _symbolSearchError = null;
+    }
+  }
+
   void _saveDraft() {
+    final preset = _strategyPresetFor(_strategyType);
     widget.onCreateStrategy(
       AutoStrategyDraft(
         name: _nameController.text.trim().isEmpty
@@ -966,11 +1653,39 @@ class _StrategyTabState extends State<_StrategyTab> {
         strategyType: _strategyType,
         assetClass: _assetClass,
         market: _market,
-        symbol: _symbolController.text.trim(),
+        symbol: _symbolForSave(),
         signalSide: _signalSide,
         triggerChangeRate: _triggerController.text.trim().isEmpty
             ? '1.0'
             : _triggerController.text.trim(),
+        fearGreedSellThreshold: _fearGreedSellController.text.trim().isEmpty
+            ? preset.fearGreedSellThreshold
+            : _fearGreedSellController.text.trim(),
+        confirmationRate: _confirmationController.text.trim().isEmpty
+            ? preset.confirmationRate
+            : _confirmationController.text.trim(),
+        takeProfitRate: _takeProfitController.text.trim().isEmpty
+            ? preset.takeProfitRate
+            : _takeProfitController.text.trim(),
+        stopLossRate: _stopLossController.text.trim().isEmpty
+            ? preset.stopLossRate
+            : _stopLossController.text.trim(),
+        entryAllocationRate: _allocationController.text.trim().isEmpty
+            ? preset.entryAllocationRate
+            : _allocationController.text.trim(),
+        maxSlices: _maxSlicesController.text.trim().isEmpty
+            ? preset.maxSlices.toString()
+            : _maxSlicesController.text.trim(),
+        gridRangeRate: _gridRangeController.text.trim().isEmpty
+            ? preset.gridRangeRate
+            : _gridRangeController.text.trim(),
+        maxDailyTradeCount: _maxDailyTradesController.text.trim().isEmpty
+            ? preset.maxDailyTradeCount.toString()
+            : _maxDailyTradesController.text.trim(),
+        limitOffsetRate: _limitOffsetController.text.trim().isEmpty
+            ? preset.limitOffsetRate
+            : _limitOffsetController.text.trim(),
+        orderKind: _orderKind,
         maxOrderAmount: removeNumberGrouping(_maxOrderController.text),
         maxDailyLossAmount: removeNumberGrouping(_maxLossController.text),
         cooldownSeconds: _cooldownSeconds,
@@ -1327,6 +2042,285 @@ class _RiskTabState extends State<_RiskTab> {
   }
 }
 
+class _StrategyTypeOption extends StatelessWidget {
+  const _StrategyTypeOption({
+    required this.preset,
+    required this.selected,
+    required this.onSelected,
+  });
+
+  final _StrategyPreset preset;
+  final bool selected;
+  final VoidCallback onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    return FilterChip(
+      selected: selected,
+      onSelected: (_) => onSelected(),
+      avatar: Icon(
+        preset.icon,
+        size: 18,
+        color: selected ? MetaServerColors.ink : MetaServerColors.cyan,
+      ),
+      label: Text(preset.label),
+      showCheckmark: false,
+      selectedColor: MetaServerColors.mint.withValues(alpha: 0.34),
+      side: BorderSide(
+        color: selected ? MetaServerColors.cyan : MetaServerColors.line,
+      ),
+      labelStyle: const TextStyle(fontWeight: FontWeight.w900),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+    );
+  }
+}
+
+class _StrategyBrief extends StatelessWidget {
+  const _StrategyBrief({required this.preset});
+
+  final _StrategyPreset preset;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(13),
+      decoration: BoxDecoration(
+        color: MetaServerColors.canvas,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: MetaServerColors.line),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              _SoftIcon(icon: preset.icon, size: 38),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      '${preset.label} 전문가 프리셋',
+                      style: const TextStyle(fontWeight: FontWeight.w900),
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      preset.description,
+                      style: TextStyle(
+                        color: MetaServerColors.ink.withValues(alpha: 0.64),
+                        fontSize: 12,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              _InfoChip(
+                icon: Icons.percent_rounded,
+                label: '${preset.triggerLabel} ${preset.triggerChangeRate}%',
+              ),
+              _InfoChip(
+                icon: Icons.swap_vert_rounded,
+                label: _sideLabel(preset.signalSide),
+              ),
+              _InfoChip(
+                icon: Icons.payments_outlined,
+                label: _won(preset.maxOrderAmount),
+              ),
+              _InfoChip(
+                icon: Icons.timer_outlined,
+                label: '${preset.cooldownSeconds}초',
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _SymbolSuggestionPicker extends StatelessWidget {
+  const _SymbolSuggestionPicker({
+    required this.options,
+    required this.query,
+    required this.selectedSymbol,
+    required this.loading,
+    required this.error,
+    required this.onSelected,
+  });
+
+  final List<AutoSymbolSearchResult> options;
+  final String query;
+  final String selectedSymbol;
+  final bool loading;
+  final String? error;
+  final ValueChanged<AutoSymbolSearchResult> onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    final title = query.trim().isEmpty ? '빠른 선택' : '검색 결과';
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: MetaServerColors.canvas,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: MetaServerColors.line),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(
+                query.trim().isEmpty
+                    ? Icons.touch_app_outlined
+                    : Icons.manage_search_rounded,
+                color: MetaServerColors.cyan,
+                size: 18,
+              ),
+              const SizedBox(width: 7),
+              Expanded(
+                child: Text(
+                  title,
+                  style: TextStyle(
+                    color: MetaServerColors.ink.withValues(alpha: 0.7),
+                    fontSize: 12,
+                    fontWeight: FontWeight.w900,
+                  ),
+                ),
+              ),
+              if (loading)
+                const SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+            ],
+          ),
+          if (error != null) ...[
+            const SizedBox(height: 8),
+            Text(
+              error!,
+              style: const TextStyle(
+                color: MetaServerColors.amber,
+                fontSize: 12,
+                fontWeight: FontWeight.w800,
+              ),
+            ),
+          ],
+          const SizedBox(height: 9),
+          if (options.isEmpty)
+            Text(
+              '종목명, 코드, 별칭으로 검색한 뒤 결과를 선택해 주세요.',
+              style: TextStyle(
+                color: MetaServerColors.ink.withValues(alpha: 0.56),
+                fontSize: 12,
+                fontWeight: FontWeight.w700,
+              ),
+            )
+          else
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                for (final option in options)
+                  _SymbolOptionPill(
+                    option: option,
+                    selected: option.symbol == selectedSymbol,
+                    onSelected: () => onSelected(option),
+                  ),
+              ],
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _SymbolOptionPill extends StatelessWidget {
+  const _SymbolOptionPill({
+    required this.option,
+    required this.selected,
+    required this.onSelected,
+  });
+
+  final AutoSymbolSearchResult option;
+  final bool selected;
+  final VoidCallback onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    return ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 230),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(8),
+        onTap: onSelected,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+          decoration: BoxDecoration(
+            color: selected
+                ? MetaServerColors.mint.withValues(alpha: 0.28)
+                : Colors.white,
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(
+              color: selected ? MetaServerColors.cyan : MetaServerColors.line,
+            ),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                _assetIcon(option.assetClass),
+                color:
+                    selected ? MetaServerColors.green : MetaServerColors.cyan,
+                size: 16,
+              ),
+              const SizedBox(width: 7),
+              Flexible(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      option.name.isEmpty ? option.symbol : option.name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w900,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      '${option.market} · ${option.symbol}',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: MetaServerColors.ink.withValues(alpha: 0.55),
+                        fontSize: 11,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _Panel extends StatelessWidget {
   const _Panel({
     required this.title,
@@ -1484,6 +2478,11 @@ class _StrategyCard extends StatelessWidget {
     final assetClass = strategy.config['asset_class']?.toString();
     final market = strategy.config['market']?.toString();
     final symbol = strategy.config['symbol']?.toString();
+    final triggerRate = strategy.config['trigger_change_rate']?.toString();
+    final signalSide = strategy.config['signal_side']?.toString();
+    final allocationRate = strategy.config['entry_allocation_rate']?.toString();
+    final maxDailyTradeCount =
+        strategy.config['max_daily_trade_count']?.toString();
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
       padding: const EdgeInsets.all(14),
@@ -1553,6 +2552,28 @@ class _StrategyCard extends StatelessWidget {
                 icon: Icons.timer_outlined,
                 label: '${strategy.cooldownSeconds}초 대기',
               ),
+              if (triggerRate != null && triggerRate.isNotEmpty)
+                _InfoChip(
+                  icon: Icons.percent_rounded,
+                  label: '기준 $triggerRate%',
+                ),
+              if (signalSide != null && signalSide.isNotEmpty)
+                _InfoChip(
+                  icon: Icons.swap_vert_rounded,
+                  label: _sideLabel(signalSide),
+                ),
+              if (allocationRate != null && allocationRate.isNotEmpty)
+                _InfoChip(
+                  icon: Icons.pie_chart_outline_rounded,
+                  label: '비중 $allocationRate%',
+                ),
+              if (maxDailyTradeCount != null &&
+                  maxDailyTradeCount.isNotEmpty &&
+                  maxDailyTradeCount != '0')
+                _InfoChip(
+                  icon: Icons.event_available_outlined,
+                  label: '일 $maxDailyTradeCount회',
+                ),
               if (strategy.status == 'active')
                 _SmallButton(
                   icon: Icons.pause_rounded,
@@ -1985,6 +3006,7 @@ class _TextInput extends StatelessWidget {
     this.keyboardType,
     this.minLines = 1,
     this.digitsOnly = false,
+    this.onChanged,
   });
 
   final TextEditingController controller;
@@ -1994,6 +3016,7 @@ class _TextInput extends StatelessWidget {
   final TextInputType? keyboardType;
   final int minLines;
   final bool digitsOnly;
+  final ValueChanged<String>? onChanged;
 
   @override
   Widget build(BuildContext context) {
@@ -2001,6 +3024,7 @@ class _TextInput extends StatelessWidget {
     return TextField(
       controller: controller,
       keyboardType: keyboardType,
+      onChanged: onChanged,
       inputFormatters: digitsOnly
           ? [FilteringTextInputFormatter.digitsOnly]
           : numeric
@@ -2089,7 +3113,7 @@ class _DarkSwitchRow extends StatelessWidget {
         Switch(
           value: value,
           onChanged: onChanged,
-          activeColor: color,
+          activeThumbColor: color,
         ),
       ],
     );
@@ -2121,34 +3145,6 @@ class _FieldTitle extends StatelessWidget {
           ),
         ),
       ],
-    );
-  }
-}
-
-class _ChoiceChip extends StatelessWidget {
-  const _ChoiceChip({
-    required this.label,
-    required this.selected,
-    required this.onSelected,
-  });
-
-  final String label;
-  final bool selected;
-  final VoidCallback onSelected;
-
-  @override
-  Widget build(BuildContext context) {
-    return FilterChip(
-      selected: selected,
-      onSelected: (_) => onSelected(),
-      label: Text(label),
-      showCheckmark: false,
-      selectedColor: MetaServerColors.mint.withValues(alpha: 0.34),
-      side: BorderSide(
-        color: selected ? MetaServerColors.cyan : MetaServerColors.line,
-      ),
-      labelStyle: const TextStyle(fontWeight: FontWeight.w900),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
     );
   }
 }
@@ -2412,11 +3408,85 @@ class _ToolbarButton extends StatelessWidget {
   }
 }
 
+List<AutoSymbolSearchResult> _localSymbolOptions({
+  required String assetClass,
+  required String market,
+  required String query,
+}) {
+  final trimmed = query.trim().toLowerCase();
+  final popularSymbols = switch (assetClass) {
+    'overseas_stock' => _autoPopularOverseasSymbols,
+    'crypto' => _autoPopularCryptoSymbols,
+    _ => _autoPopularDomesticSymbols,
+  };
+  final matches = _autoSymbolCatalog.where((option) {
+    if (option.assetClass != assetClass) return false;
+    if (trimmed.isEmpty) {
+      return popularSymbols.contains(option.symbol) &&
+          (option.market == market || assetClass != 'crypto');
+    }
+    return _symbolOptionMatches(option, trimmed);
+  }).toList();
+  matches.sort((a, b) {
+    final popularA = popularSymbols.indexOf(a.symbol);
+    final popularB = popularSymbols.indexOf(b.symbol);
+    final rankA = popularA < 0 ? 999 : popularA;
+    final rankB = popularB < 0 ? 999 : popularB;
+    if (rankA != rankB) return rankA.compareTo(rankB);
+    return a.symbol.compareTo(b.symbol);
+  });
+  return matches;
+}
+
+bool _symbolOptionMatches(AutoSymbolSearchResult option, String query) {
+  final normalizedQuery = query.toLowerCase().replaceAll('/', '-');
+  final codeQuery = normalizedQuery.replaceAll(RegExp(r'[^a-z0-9.-]'), '');
+  final words = [
+    option.name,
+    option.symbol,
+    option.market,
+    option.category,
+    ...option.aliases,
+  ].map((word) => word.toLowerCase());
+  if (words.any((word) => word.contains(normalizedQuery))) return true;
+  if (codeQuery.isEmpty) return false;
+  final symbol = option.symbol.toLowerCase();
+  if (symbol.contains(codeQuery)) return true;
+  final parts = codeQuery.split('-');
+  if (parts.length == 2 && parts.every((part) => part.isNotEmpty)) {
+    return symbol.contains('${parts.last}-${parts.first}');
+  }
+  return false;
+}
+
+List<AutoSymbolSearchResult> _uniqueSymbolOptions(
+  Iterable<AutoSymbolSearchResult> options,
+) {
+  final seen = <String>{};
+  final result = <AutoSymbolSearchResult>[];
+  for (final option in options) {
+    if (option.symbol.isEmpty) continue;
+    final key =
+        '${option.assetClass}:${option.market.toUpperCase()}:${option.symbol.toUpperCase()}';
+    if (seen.add(key)) result.add(option);
+  }
+  return result;
+}
+
+IconData _assetIcon(String assetClass) {
+  return switch (assetClass) {
+    'overseas_stock' => Icons.public_rounded,
+    'crypto' => Icons.currency_bitcoin_rounded,
+    _ => Icons.flag_circle_outlined,
+  };
+}
+
 IconData _strategyIcon(String type) {
   return switch (type) {
     'momentum' => Icons.trending_up_rounded,
     'dca' => Icons.stacked_line_chart_rounded,
     'rebalance' => Icons.balance_rounded,
+    'fear_greed' => Icons.psychology_alt_rounded,
     'grid' => Icons.grid_view_rounded,
     _ => Icons.rule_rounded,
   };
@@ -2427,6 +3497,7 @@ String _strategyLabel(String type) {
     'momentum' => '모멘텀',
     'dca' => '분할매수',
     'rebalance' => '리밸런싱',
+    'fear_greed' => '공포탐욕',
     'grid' => '그리드',
     _ => '조건식',
   };
@@ -2444,6 +3515,7 @@ String _statusLabel(String status) {
 
 String _sideLabel(String side) {
   return switch (side) {
+    'auto' => '자동',
     'sell' || 'exit' || 'risk_stop' => '매도',
     'hold' => '보류',
     _ => '매수',
