@@ -127,6 +127,28 @@ def upsert_control(
     return _row(row) or {}
 
 
+def list_monitor_user_ids(conn: Connection, limit: int = 100) -> list[str]:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT DISTINCT c.user_id::text AS user_id
+            FROM auto_trading_controls c
+            JOIN auto_trading_strategies s
+              ON s.user_id = c.user_id
+             AND s.deleted_at IS NULL
+             AND s.status = 'active'
+            WHERE c.trading_account_id IS NULL
+              AND c.automation_enabled = true
+              AND c.kill_switch_enabled = false
+            ORDER BY c.user_id::text
+            LIMIT %(limit)s
+            """,
+            {"limit": limit},
+        )
+        rows = cur.fetchall()
+    return [str(row["user_id"]) for row in rows]
+
+
 def list_strategies(
     conn: Connection,
     user_id: str,
@@ -574,15 +596,15 @@ def create_signal(
             VALUES (
                 %(strategy_id)s,
                 %(instrument_id)s,
-                %(signal_type)s,
-                %(status)s,
+                %(signal_type)s::auto_signal_type,
+                %(status_enum)s::auto_signal_status,
                 %(reason)s,
                 %(confidence)s,
                 %(market_price)s,
                 %(recommended_quantity)s,
                 %(recommended_price)s,
                 %(risk_checks)s::jsonb,
-                CASE WHEN %(status)s = 'approved' THEN now() ELSE NULL END,
+                CASE WHEN %(status_text)s = 'approved' THEN now() ELSE NULL END,
                 %(expires_at)s
             )
             RETURNING *
@@ -591,7 +613,8 @@ def create_signal(
                 "strategy_id": strategy_id,
                 "instrument_id": instrument_id,
                 "signal_type": signal_type,
-                "status": status,
+                "status_enum": status,
+                "status_text": status,
                 "reason": reason,
                 "confidence": confidence,
                 "market_price": market_price,
@@ -636,8 +659,8 @@ def create_action(
             VALUES (
                 %(strategy_id)s,
                 %(signal_id)s,
-                %(action_type)s,
-                %(status)s,
+                %(action_type)s::auto_action_type,
+                %(status)s::auto_action_status,
                 %(idempotency_key)s,
                 %(request_payload)s::jsonb,
                 %(response_payload)s::jsonb,
@@ -678,7 +701,7 @@ def update_action_result(
             """
             UPDATE auto_trade_actions
             SET
-                status = %(status)s,
+                status = %(status)s::auto_action_status,
                 response_payload = %(response_payload)s::jsonb,
                 error_message = %(error_message)s,
                 completed_at = now()

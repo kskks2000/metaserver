@@ -318,7 +318,8 @@ def _evaluate_strategy(
 
     blocked = any(not item["passed"] for item in checks["hard"])
     status = "blocked" if blocked else "generated"
-    if not blocked and not control.get("require_signal_approval", True):
+    approval_required = _approval_required(control, environment)
+    if not blocked and not approval_required:
         status = "approved"
 
     signal = auto_trading.create_signal(
@@ -358,7 +359,7 @@ def _evaluate_strategy(
             f"{symbol} 자동매매 신호가 리스크 점검에서 차단되었습니다: {checks['message']}",
             {"signal_id": signal["id"], "risk_checks": checks},
         )
-    elif control.get("require_signal_approval", True):
+    elif approval_required:
         action = _notify_action(
             conn,
             strategy,
@@ -650,8 +651,17 @@ def _risk_checks(
     daily_used = _as_decimal(all_day.get("order_amount"), Decimal("0"))
     add(
         "daily_amount_limit",
-        daily_limit is not None and daily_used + expected_amount <= daily_limit,
+        daily_limit is None or daily_used + expected_amount <= daily_limit,
         "일 자동주문 총액 한도를 초과하지 않아야 합니다.",
+    )
+
+    loss_limit = _loss_limit(control, strategy)
+    total_profit_loss = _portfolio_profit_loss(portfolio)
+    add(
+        "daily_loss_limit",
+        loss_limit is None
+        or (total_profit_loss is not None and total_profit_loss >= -loss_limit),
+        "일 손실 중지 한도를 초과하지 않아야 합니다.",
     )
 
     per_strategy = auto_trading.daily_action_summary(
@@ -706,7 +716,7 @@ def _risk_checks(
     failed = [item["message"] for item in hard if not item["passed"]]
     return {
         "hard": hard,
-        "approval_required": bool(control.get("require_signal_approval", True)),
+        "approval_required": _approval_required(control, environment),
         "message": " / ".join(failed) if failed else "리스크 점검 통과",
     }
 
@@ -955,6 +965,37 @@ def _order_limit(control: dict[str, Any], strategy: dict[str, Any]) -> Decimal |
         if value is not None
     ]
     return min(limits) if limits else None
+
+
+def _loss_limit(control: dict[str, Any], strategy: dict[str, Any]) -> Decimal | None:
+    limits = [
+        value
+        for value in [
+            _positive_decimal(control.get("max_daily_auto_loss_amount")),
+            _positive_decimal(strategy.get("max_daily_loss_amount")),
+        ]
+        if value is not None
+    ]
+    return min(limits) if limits else None
+
+
+def _portfolio_profit_loss(portfolio: Any) -> Decimal | None:
+    if portfolio is None:
+        return None
+    value = getattr(portfolio, "total_profit_loss", None)
+    if value is None:
+        return None
+    return _as_decimal(value, Decimal("0"))
+
+
+def _approval_required(
+    control: dict[str, Any],
+    environment: BrokerEnvironment,
+) -> bool:
+    return (
+        environment == BrokerEnvironment.live
+        and bool(control.get("require_signal_approval", True))
+    )
 
 
 def _json_safe(value: Any) -> Any:

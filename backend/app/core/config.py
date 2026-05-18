@@ -71,6 +71,18 @@ class Settings(BaseSettings):
     upbit_timeout_seconds: float = 10.0
     upbit_live_trading_enabled: bool = False
 
+    auto_trading_monitor_enabled: bool = True
+    auto_trading_monitor_interval_seconds: int = Field(
+        default=60,
+        ge=10,
+        le=3600,
+    )
+    auto_trading_monitor_startup_delay_seconds: float = Field(
+        default=5.0,
+        ge=0,
+        le=300,
+    )
+
     @property
     def use_local_user_store(self) -> bool:
         return self.app_env == "local" and not self.database_url

@@ -172,16 +172,16 @@ def upsert_instrument(conn: Connection, payload: InstrumentUpsert) -> dict[str, 
                 raw_payload
             )
             VALUES (
-                %(asset_class)s,
+                %(asset_class_enum)s::asset_class,
                 COALESCE(
                     %(asset_code)s,
                     concat_ws(
                         ':',
-                        CASE %(asset_class)s
+                        CASE %(asset_class_text)s
                             WHEN 'domestic_stock' THEN 'DOMESTIC'
                             WHEN 'overseas_stock' THEN 'OVERSEAS'
                             WHEN 'crypto' THEN 'CRYPTO'
-                            ELSE upper(%(asset_class)s)
+                            ELSE upper(%(asset_class_text)s)
                         END,
                         upper(%(market)s),
                         upper(%(symbol)s)
@@ -193,7 +193,7 @@ def upsert_instrument(conn: Connection, payload: InstrumentUpsert) -> dict[str, 
                 %(isin)s,
                 %(name_ko)s,
                 %(name_en)s,
-                %(instrument_type)s,
+                %(instrument_type)s::instrument_type,
                 %(currency)s,
                 COALESCE(%(quote_currency)s, %(currency)s),
                 %(base_currency)s,
@@ -231,6 +231,8 @@ def upsert_instrument(conn: Connection, payload: InstrumentUpsert) -> dict[str, 
             """,
             {
                 **payload.model_dump(mode="json"),
+                "asset_class_enum": payload.asset_class,
+                "asset_class_text": payload.asset_class,
                 "raw_payload": Json(payload.raw_payload),
             },
         )

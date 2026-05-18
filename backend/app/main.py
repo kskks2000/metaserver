@@ -9,6 +9,7 @@ from app.core.config import get_settings
 from app.core.database import close_database_pool, open_database_pool
 from app.core.firebase import initialize_firebase
 from app.routers import auth, auto_trading, health, trading
+from app.services.auto_trading_monitor import AutoTradingMonitor
 
 
 settings = get_settings()
@@ -17,9 +18,15 @@ settings = get_settings()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     initialize_firebase()
+    monitor: AutoTradingMonitor | None = None
     if not settings.use_local_user_store:
         open_database_pool()
+        if settings.auto_trading_monitor_enabled:
+            monitor = AutoTradingMonitor(settings)
+            monitor.start()
     yield
+    if monitor is not None:
+        await monitor.stop()
     if not settings.use_local_user_store:
         close_database_pool()
 
