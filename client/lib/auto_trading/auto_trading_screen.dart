@@ -13,6 +13,24 @@ import 'auto_trading_repository.dart';
 
 enum _AutoTab { dashboard, strategy, execution, risk }
 
+IconData _autoTabIcon(_AutoTab tab) {
+  return switch (tab) {
+    _AutoTab.dashboard => Icons.space_dashboard_outlined,
+    _AutoTab.strategy => Icons.account_tree_outlined,
+    _AutoTab.execution => Icons.bolt_outlined,
+    _AutoTab.risk => Icons.health_and_safety_outlined,
+  };
+}
+
+String _autoTabLabel(_AutoTab tab) {
+  return switch (tab) {
+    _AutoTab.dashboard => '현황',
+    _AutoTab.strategy => '전략',
+    _AutoTab.execution => '실행',
+    _AutoTab.risk => '리스크',
+  };
+}
+
 const _autoAssetLabels = {
   'domestic_stock': '국내',
   'overseas_stock': '해외',
@@ -913,48 +931,92 @@ class _TabStrip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return SegmentedButton<_AutoTab>(
-      selected: {selected},
-      onSelectionChanged: (value) => onSelected(value.first),
-      showSelectedIcon: false,
-      segments: const [
-        ButtonSegment(
-          value: _AutoTab.dashboard,
-          icon: Icon(Icons.space_dashboard_outlined),
-          label: Text('현황'),
-        ),
-        ButtonSegment(
-          value: _AutoTab.strategy,
-          icon: Icon(Icons.account_tree_outlined),
-          label: Text('전략'),
-        ),
-        ButtonSegment(
-          value: _AutoTab.execution,
-          icon: Icon(Icons.bolt_outlined),
-          label: Text('실행'),
-        ),
-        ButtonSegment(
-          value: _AutoTab.risk,
-          icon: Icon(Icons.health_and_safety_outlined),
-          label: Text('리스크'),
-        ),
-      ],
-      style: ButtonStyle(
-        visualDensity: VisualDensity.compact,
-        backgroundColor: WidgetStateProperty.resolveWith((states) {
-          if (states.contains(WidgetState.selected)) {
-            return MetaServerColors.ink;
-          }
-          return Colors.white;
-        }),
-        foregroundColor: WidgetStateProperty.resolveWith((states) {
-          if (states.contains(WidgetState.selected)) {
-            return Colors.white;
-          }
-          return MetaServerColors.ink;
-        }),
-        side: WidgetStateProperty.all(
-          const BorderSide(color: MetaServerColors.line),
+    return Container(
+      padding: const EdgeInsets.all(4),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: MetaServerColors.line),
+      ),
+      child: Row(
+        children: [
+          for (final tab in _AutoTab.values)
+            Expanded(
+              child: _ConsoleTabButton(
+                tab: tab,
+                selected: selected == tab,
+                onTap: () => onSelected(tab),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ConsoleTabButton extends StatelessWidget {
+  const _ConsoleTabButton({
+    required this.tab,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final _AutoTab tab;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final foreground =
+        selected ? Colors.white : MetaServerColors.ink.withValues(alpha: 0.82);
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 2),
+      child: Tooltip(
+        message: _autoTabLabel(tab),
+        child: Material(
+          color: Colors.transparent,
+          child: InkWell(
+            onTap: selected ? null : onTap,
+            borderRadius: BorderRadius.circular(8),
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 160),
+              curve: Curves.easeOut,
+              height: 40,
+              padding: const EdgeInsets.symmetric(horizontal: 6),
+              decoration: BoxDecoration(
+                color: selected ? MetaServerColors.ink : Colors.transparent,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(
+                  color: selected
+                      ? MetaServerColors.ink
+                      : MetaServerColors.line.withValues(alpha: 0),
+                ),
+              ),
+              child: Center(
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(_autoTabIcon(tab), size: 17, color: foreground),
+                    const SizedBox(width: 5),
+                    Flexible(
+                      child: Text(
+                        _autoTabLabel(tab),
+                        maxLines: 1,
+                        softWrap: false,
+                        overflow: TextOverflow.fade,
+                        style: TextStyle(
+                          color: foreground,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w900,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
         ),
       ),
     );
@@ -970,34 +1032,40 @@ class _DashboardTab extends StatelessWidget {
   Widget build(BuildContext context) {
     return Column(
       children: [
-        _ResponsiveGrid(
-          minTileWidth: 170,
-          children: [
-            _MetricPanel(
-              icon: Icons.account_tree_rounded,
-              label: '전체 전략',
-              value: '${overview.totalStrategies}',
-              accent: MetaServerColors.cyan,
-            ),
-            _MetricPanel(
-              icon: Icons.play_circle_outline_rounded,
-              label: '활성 전략',
-              value: '${overview.activeStrategies}',
-              accent: MetaServerColors.green,
-            ),
-            _MetricPanel(
-              icon: Icons.pending_actions_rounded,
-              label: '대기 신호',
-              value: '${overview.pendingSignals}',
-              accent: MetaServerColors.amber,
-            ),
-            _MetricPanel(
-              icon: Icons.receipt_long_rounded,
-              label: '오늘 액션',
-              value: '${overview.todayActions}',
-              accent: MetaServerColors.mint,
-            ),
-          ],
+        LayoutBuilder(
+          builder: (context, constraints) {
+            final compact = constraints.maxWidth < 560;
+            return _ResponsiveGrid(
+              minTileWidth: compact ? 150 : 170,
+              childAspectRatio: compact ? 1.9 : 2.55,
+              children: [
+                _MetricPanel(
+                  icon: Icons.account_tree_rounded,
+                  label: '전체 전략',
+                  value: '${overview.totalStrategies}',
+                  accent: MetaServerColors.cyan,
+                ),
+                _MetricPanel(
+                  icon: Icons.play_circle_outline_rounded,
+                  label: '활성 전략',
+                  value: '${overview.activeStrategies}',
+                  accent: MetaServerColors.green,
+                ),
+                _MetricPanel(
+                  icon: Icons.pending_actions_rounded,
+                  label: '대기 신호',
+                  value: '${overview.pendingSignals}',
+                  accent: MetaServerColors.amber,
+                ),
+                _MetricPanel(
+                  icon: Icons.receipt_long_rounded,
+                  label: '오늘 액션',
+                  value: '${overview.todayActions}',
+                  accent: MetaServerColors.mint,
+                ),
+              ],
+            );
+          },
         ),
         const SizedBox(height: 16),
         LayoutBuilder(
@@ -1247,7 +1315,7 @@ class _StrategyTabState extends ConsumerState<_StrategyTab> {
                 ],
               ),
               const SizedBox(height: 12),
-              _ResponsiveGrid(
+              _FormGrid(
                 minTileWidth: 190,
                 children: [
                   DropdownButtonFormField<String>(
@@ -1326,7 +1394,7 @@ class _StrategyTabState extends ConsumerState<_StrategyTab> {
               const SizedBox(height: 14),
               _FieldTitle(icon: Icons.receipt_long_outlined, label: '주문 설정'),
               const SizedBox(height: 8),
-              _ResponsiveGrid(
+              _FormGrid(
                 minTileWidth: 180,
                 children: [
                   _TextInput(
@@ -1591,7 +1659,7 @@ class _StrategyTabState extends ConsumerState<_StrategyTab> {
         ),
       );
 
-    return _ResponsiveGrid(minTileWidth: 180, children: fields);
+    return _FormGrid(minTileWidth: 170, children: fields);
   }
 
   List<AutoSymbolSearchResult> _symbolOptions() {
@@ -2684,10 +2752,12 @@ class _ResponsiveGrid extends StatelessWidget {
   const _ResponsiveGrid({
     required this.children,
     required this.minTileWidth,
+    this.childAspectRatio = 2.45,
   });
 
   final List<Widget> children;
   final double minTileWidth;
+  final double childAspectRatio;
 
   @override
   Widget build(BuildContext context) {
@@ -2702,8 +2772,41 @@ class _ResponsiveGrid extends StatelessWidget {
           mainAxisSpacing: 12,
           shrinkWrap: true,
           physics: const NeverScrollableScrollPhysics(),
-          childAspectRatio: 2.45,
+          childAspectRatio: childAspectRatio,
           children: children,
+        );
+      },
+    );
+  }
+}
+
+class _FormGrid extends StatelessWidget {
+  const _FormGrid({
+    required this.children,
+    required this.minTileWidth,
+  });
+
+  final List<Widget> children;
+  final double minTileWidth;
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        const spacing = 10.0;
+        final maxWidth = constraints.maxWidth;
+        final count = ((maxWidth + spacing) / (minTileWidth + spacing))
+            .floor()
+            .clamp(1, children.length);
+        final itemWidth = (maxWidth - spacing * (count - 1)) / count;
+
+        return Wrap(
+          spacing: spacing,
+          runSpacing: spacing,
+          children: [
+            for (final child in children)
+              SizedBox(width: itemWidth, child: child),
+          ],
         );
       },
     );
@@ -2726,7 +2829,7 @@ class _MetricPanel extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.all(14),
+      padding: const EdgeInsets.all(13),
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(8),
@@ -2743,18 +2846,24 @@ class _MetricPanel extends StatelessWidget {
               children: [
                 Text(
                   label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                   style: TextStyle(
                     color: MetaServerColors.ink.withValues(alpha: 0.58),
+                    fontSize: 12,
                     fontWeight: FontWeight.w800,
                   ),
                 ),
                 const SizedBox(height: 3),
                 Text(
                   value,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                   style: const TextStyle(
                     color: MetaServerColors.ink,
                     fontWeight: FontWeight.w900,
-                    fontSize: 24,
+                    fontSize: 26,
+                    height: 1,
                   ),
                 ),
               ],
@@ -2956,6 +3065,13 @@ class _CompactStrategyRow extends StatelessWidget {
     final assetClass = strategy.config['asset_class']?.toString();
     final market = strategy.config['market']?.toString();
     final symbol = strategy.config['symbol']?.toString();
+    final details = [
+      _strategyLabel(strategy.strategyType),
+      _autoAssetLabel(assetClass),
+      if (market != null && market.isNotEmpty) market,
+      if (symbol != null && symbol.isNotEmpty) symbol,
+      strategy.environment == 'live' ? '실전' : '모의',
+    ];
     return Container(
       margin: const EdgeInsets.only(bottom: 10),
       padding: const EdgeInsets.all(12),
@@ -2978,26 +3094,48 @@ class _CompactStrategyRow extends StatelessWidget {
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(fontWeight: FontWeight.w900),
                 ),
-                const SizedBox(height: 3),
-                Text(
-                  [
-                    _strategyLabel(strategy.strategyType),
-                    _autoAssetLabel(assetClass),
-                    if (market != null && market.isNotEmpty) market,
-                    if (symbol != null && symbol.isNotEmpty) symbol,
-                    strategy.environment == 'live' ? '실전' : '모의',
-                  ].join(' · '),
-                  style: TextStyle(
-                    color: MetaServerColors.ink.withValues(alpha: 0.58),
-                    fontSize: 12,
-                    fontWeight: FontWeight.w700,
-                  ),
+                const SizedBox(height: 6),
+                Wrap(
+                  spacing: 5,
+                  runSpacing: 5,
+                  children: [
+                    for (final detail in details) _MetaPill(label: detail),
+                  ],
                 ),
               ],
             ),
           ),
           _StatusBadge(status: strategy.status),
         ],
+      ),
+    );
+  }
+}
+
+class _MetaPill extends StatelessWidget {
+  const _MetaPill({required this.label});
+
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 4),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: MetaServerColors.line),
+      ),
+      child: Text(
+        label,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: TextStyle(
+          color: MetaServerColors.ink.withValues(alpha: 0.62),
+          fontSize: 11,
+          fontWeight: FontWeight.w800,
+          height: 1,
+        ),
       ),
     );
   }
