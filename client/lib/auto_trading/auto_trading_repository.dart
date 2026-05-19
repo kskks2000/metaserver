@@ -498,6 +498,7 @@ class AutoTradeSignal {
     required this.id,
     required this.strategyId,
     this.strategyName,
+    required this.assetClass,
     required this.symbol,
     required this.name,
     required this.signalType,
@@ -514,15 +515,16 @@ class AutoTradeSignal {
   final String id;
   final String strategyId;
   final String? strategyName;
+  final String assetClass;
   final String symbol;
   final String name;
   final String signalType;
   final String status;
   final String? reason;
   final double confidence;
-  final int marketPrice;
-  final int recommendedQuantity;
-  final int recommendedPrice;
+  final double marketPrice;
+  final double recommendedQuantity;
+  final double recommendedPrice;
   final Map<String, dynamic> riskChecks;
   final String generatedAt;
 
@@ -531,15 +533,16 @@ class AutoTradeSignal {
       id: json['id']?.toString() ?? '',
       strategyId: json['strategy_id']?.toString() ?? '',
       strategyName: json['strategy_name']?.toString(),
+      assetClass: json['asset_class']?.toString() ?? '',
       symbol: json['symbol']?.toString() ?? '',
       name: json['name']?.toString() ?? '',
       signalType: json['signal_type']?.toString() ?? 'buy',
       status: json['status']?.toString() ?? 'generated',
       reason: json['reason']?.toString(),
       confidence: _asDouble(json['confidence']),
-      marketPrice: _asInt(json['market_price']),
-      recommendedQuantity: _asInt(json['recommended_quantity']),
-      recommendedPrice: _asInt(json['recommended_price']),
+      marketPrice: _asDouble(json['market_price']),
+      recommendedQuantity: _asDouble(json['recommended_quantity']),
+      recommendedPrice: _asDouble(json['recommended_price']),
       riskChecks: _asMap(json['risk_checks']),
       generatedAt: json['generated_at']?.toString() ?? '',
     );
@@ -666,13 +669,15 @@ List<Map<String, dynamic>> _asList(Object? value) {
 int _asInt(Object? value, [int fallback = 0]) {
   if (value is int) return value;
   if (value is num) return value.toInt();
-  return int.tryParse(value?.toString() ?? '') ?? fallback;
+  final text = value?.toString().replaceAll(',', '') ?? '';
+  return int.tryParse(text) ?? double.tryParse(text)?.toInt() ?? fallback;
 }
 
 double _asDouble(Object? value, [double fallback = 0]) {
   if (value is double) return value;
   if (value is num) return value.toDouble();
-  return double.tryParse(value?.toString() ?? '') ?? fallback;
+  return double.tryParse(value?.toString().replaceAll(',', '') ?? '') ??
+      fallback;
 }
 
 Map<String, dynamic> _asMap(Object? value) {

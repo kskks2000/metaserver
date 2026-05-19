@@ -176,6 +176,7 @@ class AutoTradeSignalRecord(BaseModel):
     strategy_id: str
     strategy_name: str | None = None
     instrument_id: str
+    asset_class: str | None = None
     symbol: str
     name: str
     signal_type: AutoSignalType

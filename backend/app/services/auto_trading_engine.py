@@ -100,6 +100,9 @@ def evaluate_auto_trading(conn: Connection, user_id: str) -> AutoEvaluationRespo
             )
             continue
 
+        if _daily_trade_count_reached(conn, user_id, strategy):
+            continue
+
         result = _evaluate_strategy(conn, user_id, control, strategy)
         if result is None:
             continue
@@ -362,7 +365,7 @@ def _evaluate_strategy(
         risk_checks=_json_safe(checks),
         expires_at=datetime.now().astimezone() + timedelta(minutes=15),
     )
-    _decorate_signal(signal, strategy, symbol, name)
+    _decorate_signal(signal, strategy, symbol, name, asset_class)
 
     action: dict[str, Any] | None
     submitted = False
@@ -777,7 +780,7 @@ def _risk_checks(
     def add(key: str, passed: bool, message: str) -> None:
         hard.append({"key": key, "passed": passed, "message": message})
 
-    add("quantity", quantity > 0, "주문 가능 수량이 1주 이상이어야 합니다.")
+    add("quantity", quantity > 0, "주문 가능 수량이 0보다 커야 합니다.")
     add("amount", expected_amount > 0, "주문 예상금액이 0원보다 커야 합니다.")
 
     single_limit = _order_limit(control, strategy)
@@ -1018,6 +1021,22 @@ def _event(
     )
 
 
+def _daily_trade_count_reached(
+    conn: Connection,
+    user_id: str,
+    strategy: dict[str, Any],
+) -> bool:
+    max_trade_count = _as_int(strategy.get("max_daily_trade_count"), 0)
+    if max_trade_count <= 0:
+        return False
+    per_strategy = auto_trading.daily_action_summary(
+        conn,
+        user_id,
+        str(strategy["id"]),
+    )
+    return _as_int(per_strategy.get("order_count"), 0) >= max_trade_count
+
+
 def _directory_item(symbol: str):
     try:
         matches = krx_stock_directory.search(symbol, limit=1)
@@ -1062,8 +1081,11 @@ def _decorate_signal(
     strategy: dict[str, Any],
     symbol: str,
     name: str,
+    asset_class: str | None = None,
 ) -> None:
+    config = _as_dict(strategy.get("config"))
     signal["strategy_name"] = strategy.get("name")
+    signal["asset_class"] = str(asset_class or config.get("asset_class") or "")
     signal["symbol"] = symbol
     signal["name"] = name
 

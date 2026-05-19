@@ -124,6 +124,32 @@ class AutoTradingRiskChecksTest(unittest.TestCase):
             )
         )
 
+    def test_daily_trade_count_reached_when_order_count_matches_limit(self) -> None:
+        auto_trading_engine.auto_trading.daily_action_summary = (
+            lambda *args, **kwargs: {"order_count": 2, "order_amount": "5000"}
+        )
+
+        reached = auto_trading_engine._daily_trade_count_reached(
+            conn=object(),
+            user_id="user-id",
+            strategy={"id": "strategy-id", "max_daily_trade_count": 2},
+        )
+
+        self.assertTrue(reached)
+
+    def test_daily_trade_count_not_reached_when_limit_is_unset(self) -> None:
+        auto_trading_engine.auto_trading.daily_action_summary = (
+            lambda *args, **kwargs: {"order_count": 20, "order_amount": "5000"}
+        )
+
+        reached = auto_trading_engine._daily_trade_count_reached(
+            conn=object(),
+            user_id="user-id",
+            strategy={"id": "strategy-id", "max_daily_trade_count": 0},
+        )
+
+        self.assertFalse(reached)
+
     def test_top_stock_rebalance_decision_uses_market_cap_gap(self) -> None:
         decision = auto_trading_engine._decision(
             {"strategy_type": "top_stock_rebalance"},

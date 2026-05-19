@@ -440,13 +440,24 @@ def list_signals(
     conn: Connection,
     user_id: str,
     limit: int = 50,
+    *,
+    pending_only: bool = False,
 ) -> list[dict[str, Any]]:
+    pending_filter = (
+        """
+              AND sig.status IN ('generated', 'approved')
+              AND (sig.expires_at IS NULL OR sig.expires_at > now())
+        """
+        if pending_only
+        else ""
+    )
     with conn.cursor() as cur:
         cur.execute(
-            """
+            f"""
             SELECT
                 sig.*,
                 s.name AS strategy_name,
+                i.asset_class,
                 i.symbol,
                 COALESCE(i.name_ko, i.symbol) AS name
             FROM auto_trade_signals sig
@@ -454,6 +465,7 @@ def list_signals(
             JOIN instruments i ON i.id = sig.instrument_id
             WHERE s.user_id = %(user_id)s
               AND s.deleted_at IS NULL
+              {pending_filter}
             ORDER BY sig.generated_at DESC
             LIMIT %(limit)s
             """,
@@ -467,7 +479,10 @@ def list_actions(
     conn: Connection,
     user_id: str,
     limit: int = 50,
+    *,
+    compact_repeated: bool = False,
 ) -> list[dict[str, Any]]:
+    fetch_limit = limit * 5 if compact_repeated else limit
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -485,10 +500,31 @@ def list_actions(
             ORDER BY a.created_at DESC
             LIMIT %(limit)s
             """,
-            {"user_id": user_id, "limit": limit},
+            {"user_id": user_id, "limit": fetch_limit},
         )
         rows = cur.fetchall()
-    return _rows(rows)
+    result = _rows(rows)
+    if not compact_repeated:
+        return result
+
+    compacted: list[dict[str, Any]] = []
+    repeated_notify_keys: set[tuple[str, str, str, str, str]] = set()
+    for row in result:
+        if row.get("action_type") == "notify" and row.get("status") == "failed":
+            key = (
+                str(row.get("strategy_id") or ""),
+                str(row.get("symbol") or ""),
+                str(row.get("action_type") or ""),
+                str(row.get("status") or ""),
+                str(row.get("error_message") or ""),
+            )
+            if key in repeated_notify_keys:
+                continue
+            repeated_notify_keys.add(key)
+        compacted.append(row)
+        if len(compacted) >= limit:
+            break
+    return compacted
 
 
 def recent_signal_exists(
@@ -723,8 +759,8 @@ def get_overview(conn: Connection, user_id: str) -> dict[str, Any]:
     control = get_or_create_control(conn, user_id)
     strategies = list_strategies(conn, user_id, limit=6)
     events = list_events(conn, user_id, limit=8)
-    signals = list_signals(conn, user_id, limit=8)
-    actions = list_actions(conn, user_id, limit=8)
+    signals = list_signals(conn, user_id, limit=8, pending_only=True)
+    actions = list_actions(conn, user_id, limit=8, compact_repeated=True)
 
     with conn.cursor() as cur:
         cur.execute(
@@ -757,6 +793,7 @@ def get_overview(conn: Connection, user_id: str) -> dict[str, Any]:
                     FROM auto_trade_actions a
                     JOIN user_strategies s ON s.id = a.strategy_id
                     WHERE a.created_at >= current_date
+                      AND a.action_type = 'place_order'
                 ) AS today_actions
             FROM user_strategies
             """,

@@ -3048,7 +3048,7 @@ class _SignalRow extends StatelessWidget {
                 ),
                 const SizedBox(height: 6),
                 Text(
-                  '현재가 ${_won(signal.marketPrice.toString())} · 권장 ${signal.recommendedQuantity}주',
+                  _signalExecutionDetail(signal),
                   style: TextStyle(
                     color: MetaServerColors.ink.withValues(alpha: 0.5),
                     fontSize: 12,
@@ -3879,6 +3879,32 @@ String _won(String? value) {
   final number =
       int.tryParse(removeNumberGrouping((value ?? '0').split('.').first)) ?? 0;
   return '${_comma(number)}원';
+}
+
+String _signalExecutionDetail(AutoTradeSignal signal) {
+  return '현재가 ${_signalPriceLabel(signal)} · 권장 ${_signalQuantityLabel(signal)}';
+}
+
+String _signalPriceLabel(AutoTradeSignal signal) {
+  if (signal.assetClass == 'overseas_stock') {
+    return '\$${_formatDecimal(signal.marketPrice, maxFractionDigits: 2)}';
+  }
+  return '${_comma(signal.marketPrice.round())}원';
+}
+
+String _signalQuantityLabel(AutoTradeSignal signal) {
+  final isCrypto = signal.assetClass == 'crypto' || signal.symbol.contains('-');
+  if (isCrypto) {
+    return '${_formatDecimal(signal.recommendedQuantity, maxFractionDigits: 8)}개';
+  }
+  return '${_comma(signal.recommendedQuantity.floor())}주';
+}
+
+String _formatDecimal(double value, {int maxFractionDigits = 6}) {
+  final fixed = value.toStringAsFixed(maxFractionDigits);
+  return fixed
+      .replaceFirst(RegExp(r'0+$'), '')
+      .replaceFirst(RegExp(r'\.$'), '');
 }
 
 String _comma(int value) {
