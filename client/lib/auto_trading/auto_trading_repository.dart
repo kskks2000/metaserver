@@ -456,6 +456,12 @@ class AutoStrategyDraft {
         'order_kind': orderKind,
         'limit_offset_rate': limitOffsetRate,
         'quantity_type': 'amount',
+        if (strategyType == 'top_stock_rebalance') ...{
+          'top_stock_source': 'stockanalysis',
+          'top_stock_universe': 'us_public_market_cap',
+          'top_stock_min_gap_rate': triggerChangeRate,
+          'target_allocation_rate': entryAllocationRate,
+        },
       },
     };
   }
@@ -467,6 +473,7 @@ String _strategyProfile(String strategyType) {
     'dca' => 'scaled_pullback_entry',
     'grid' => 'volatility_grid',
     'rebalance' => 'allocation_drift',
+    'top_stock_rebalance' => 'us_market_cap_leader_rebalance',
     'fear_greed' => 'sentiment_extreme_reversion',
     _ => 'rule_condition',
   };

@@ -44,6 +44,25 @@ class YahooMarketDataClientTest(unittest.TestCase):
         self.assertEqual(item.raw_output["source"], "yahoo_chart")
         self.assertEqual(item.raw_output["symbol"], "YM=F")
 
+    def test_top_us_market_cap_stocks_parses_stockanalysis_table(self) -> None:
+        html = """
+        <table>
+          <tr><td>1</td><td><a href="/stocks/nvda/">NVDA</a></td>
+            <td>NVIDIA Corporation</td><td>5.38T</td><td>222.32</td><td>-1.33%</td></tr>
+          <tr><td>2</td><td><a href="/stocks/aapl/">AAPL</a></td>
+            <td>Apple Inc.</td><td>4.39T</td><td>298.87</td><td>1.38%</td></tr>
+        </table>
+        """
+
+        items = YahooMarketDataClient._parse_us_market_cap_table(html)
+
+        self.assertEqual(len(items), 2)
+        self.assertEqual(items[0].symbol, "NVDA")
+        self.assertEqual(items[0].name, "NVIDIA Corporation")
+        self.assertEqual(str(items[0].market_cap), "5380000000000.00")
+        self.assertEqual(str(items[0].price), "222.32")
+        self.assertEqual(str(items[0].change_rate), "-1.33")
+
 
 if __name__ == "__main__":
     unittest.main()

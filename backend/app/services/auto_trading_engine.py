@@ -30,12 +30,35 @@ from app.services.kis import (
     KisOrderValidationError,
     get_kis_client,
 )
+from app.services.market_data import MarketDataError, get_yahoo_market_data_client
 from app.services.upbit import (
     UpbitApiError,
     UpbitConfigurationError,
     UpbitOrderValidationError,
     get_upbit_client,
 )
+
+
+TOP_STOCK_MARKET_BY_SYMBOL = {
+    "AAPL": "NASDAQ",
+    "MSFT": "NASDAQ",
+    "NVDA": "NASDAQ",
+    "GOOGL": "NASDAQ",
+    "GOOG": "NASDAQ",
+    "AMZN": "NASDAQ",
+    "META": "NASDAQ",
+    "AVGO": "NASDAQ",
+    "TSLA": "NASDAQ",
+    "BRK.B": "NYSE",
+    "BRK-B": "NYSE",
+    "LLY": "NYSE",
+    "JPM": "NYSE",
+    "V": "NYSE",
+    "WMT": "NYSE",
+    "MA": "NYSE",
+    "ORCL": "NYSE",
+    "XOM": "NYSE",
+}
 
 
 def evaluate_auto_trading(conn: Connection, user_id: str) -> AutoEvaluationResponse:
@@ -111,6 +134,9 @@ def _evaluate_strategy(
     strategy: dict[str, Any],
 ) -> dict[str, Any] | None:
     config = _as_dict(strategy.get("config"))
+    strategy_type = str(strategy.get("strategy_type") or "condition")
+    if strategy_type == "top_stock_rebalance":
+        config = _resolve_top_stock_rebalance_config(conn, user_id, strategy, config)
     asset_class = str(config.get("asset_class") or "domestic_stock")
     symbol = _symbol(config)
     if symbol is None:
@@ -406,6 +432,89 @@ def _evaluate_strategy(
     return {"signal": signal, "action": action, "submitted": submitted}
 
 
+def _resolve_top_stock_rebalance_config(
+    conn: Connection,
+    user_id: str,
+    strategy: dict[str, Any],
+    config: dict[str, Any],
+) -> dict[str, Any]:
+    fallback_symbol = str(config.get("symbol") or "NVDA").strip().upper() or "NVDA"
+    fallback_market = str(config.get("market") or "").strip().upper()
+    if not fallback_market:
+        fallback_market = TOP_STOCK_MARKET_BY_SYMBOL.get(fallback_symbol, "NASDAQ")
+
+    try:
+        leaders = get_yahoo_market_data_client().top_us_market_cap_stocks(limit=5)
+    except MarketDataError as exc:
+        _event(
+            conn,
+            user_id,
+            strategy,
+            "warning",
+            "top_stock.lookup_failed",
+            f"미국 시가총액 1위 데이터 조회에 실패해 대체 종목 {fallback_symbol}로 평가합니다: {exc}",
+            {"fallback_symbol": fallback_symbol, "source": "stockanalysis"},
+        )
+        return {
+            **config,
+            "asset_class": "overseas_stock",
+            "market": fallback_market,
+            "symbol": fallback_symbol,
+            "top_stock_source": "fallback",
+            "top_stock_rank": 1,
+            "top_stock_market_cap_gap_rate": "0",
+        }
+
+    leader = leaders[0]
+    runner_up = leaders[1] if len(leaders) > 1 else None
+    market_cap_gap_rate = Decimal("0")
+    if runner_up is not None and runner_up.market_cap > 0:
+        market_cap_gap_rate = (
+            (leader.market_cap - runner_up.market_cap)
+            / runner_up.market_cap
+            * Decimal("100")
+        )
+
+    symbol = _normalize_us_symbol_for_kis(leader.symbol)
+    market = TOP_STOCK_MARKET_BY_SYMBOL.get(symbol, fallback_market or "NASDAQ")
+    configured_symbol = str(config.get("resolved_top_stock_symbol") or config.get("symbol") or "")
+    if configured_symbol.upper() != symbol:
+        _event(
+            conn,
+            user_id,
+            strategy,
+            "info",
+            "top_stock.resolved",
+            f"미국 시가총액 1위 종목을 {leader.name}({symbol})로 확인했습니다.",
+            {
+                "rank": leader.rank,
+                "symbol": symbol,
+                "name": leader.name,
+                "market_cap": str(leader.market_cap),
+                "market_cap_text": leader.market_cap_text,
+                "runner_up": runner_up.symbol if runner_up is not None else None,
+                "market_cap_gap_rate": str(market_cap_gap_rate),
+                "source": leader.source,
+            },
+        )
+
+    return {
+        **config,
+        "asset_class": "overseas_stock",
+        "market": market,
+        "symbol": symbol,
+        "name": leader.name,
+        "resolved_top_stock_symbol": symbol,
+        "top_stock_rank": leader.rank,
+        "top_stock_name": leader.name,
+        "top_stock_market_cap": str(leader.market_cap),
+        "top_stock_market_cap_text": leader.market_cap_text,
+        "top_stock_market_cap_gap_rate": str(market_cap_gap_rate),
+        "top_stock_source": leader.source,
+        "top_stock_runner_up": runner_up.symbol if runner_up is not None else None,
+    }
+
+
 def _decision(
     strategy: dict[str, Any],
     config: dict[str, Any],
@@ -485,6 +594,26 @@ def _decision(
             f"비중 재조정 편차 {effective_threshold}% 기준을 충족했습니다. "
             f"현재 등락률은 {rate}%입니다."
         )
+    elif strategy_type == "top_stock_rebalance":
+        side = OrderSide.buy
+        rank = _as_int(config.get("top_stock_rank"), 0)
+        symbol = str(config.get("symbol") or "").upper()
+        name = str(config.get("top_stock_name") or config.get("name") or symbol)
+        market_cap_text = str(config.get("top_stock_market_cap_text") or "")
+        source = str(config.get("top_stock_source") or "stockanalysis")
+        market_cap_gap = _as_decimal(
+            config.get("top_stock_market_cap_gap_rate"),
+            Decimal("0"),
+        )
+        min_gap = threshold + confirmation
+        confidence_threshold = max(Decimal("1"), min_gap)
+        triggered = rank == 1 and (min_gap == 0 or market_cap_gap >= min_gap)
+        reason = (
+            f"미국 시가총액 1위 {name}({symbol})를 확인했습니다. "
+            f"시총 {market_cap_text}, 2위 대비 격차 {market_cap_gap:.2f}%입니다. "
+            f"선두 격차 기준 {min_gap}%를 적용해 목표 비중 리밸런싱 매수 신호를 생성합니다. "
+            f"source={source}"
+        )
     elif strategy_type == "fear_greed":
         index_value = _as_decimal(config.get("fear_greed_value"), Decimal("-1"))
         fear_threshold = abs(
@@ -555,6 +684,18 @@ def _decision(
         else:
             distance = max(Decimal("0"), index_value - greed_threshold)
         ratio = min(Decimal("1"), max(Decimal("0"), distance / confidence_threshold))
+    elif strategy_type == "top_stock_rebalance":
+        ratio = min(
+            Decimal("1"),
+            max(
+                Decimal("0"),
+                _as_decimal(
+                    config.get("top_stock_market_cap_gap_rate"),
+                    Decimal("0"),
+                )
+                / confidence_threshold,
+            ),
+        )
     else:
         ratio = min(Decimal("1"), max(Decimal("0"), abs(rate) / confidence_threshold))
     confidence = (Decimal("0.45") + ratio * Decimal("0.5")).quantize(
@@ -889,10 +1030,16 @@ def _symbol(config: dict[str, Any]) -> str | None:
     symbol = str(config.get("symbol") or config.get("stock_code") or "").strip()
     if not symbol:
         return None
-    cleaned = "".join(ch for ch in symbol.upper() if ch.isalnum() or ch in {":", "/", "_", "-"})
+    cleaned = "".join(
+        ch for ch in symbol.upper() if ch.isalnum() or ch in {":", "/", "_", "-", "."}
+    )
     if cleaned.isdigit() and len(cleaned) <= 6:
         return cleaned.zfill(6)
     return cleaned or None
+
+
+def _normalize_us_symbol_for_kis(symbol: str) -> str:
+    return symbol.strip().upper().replace("/", ".").replace("-", ".")
 
 
 def _holding_quantity(portfolio: Any, symbol: str) -> Decimal:

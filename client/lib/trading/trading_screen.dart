@@ -188,6 +188,7 @@ class _TradingScreenState extends ConsumerState<TradingScreen> {
   late Future<KisMarketStatus> _marketStatusFuture;
   KisMarketStatus? _cachedMarketStatus;
   bool _quoteLoading = false;
+  int _activityRefreshToken = 0;
 
   @override
   void initState() {
@@ -831,8 +832,11 @@ class _TradingScreenState extends ConsumerState<TradingScreen> {
         upbitPortfolioFuture: _upbitPortfolioFuture,
         cachedUpbitPortfolio: _cachedUpbitPortfolio,
         onSideChanged: (side) => setState(() => _tradeSide = side),
+        onOrderSubmitted: () {
+          setState(() => _activityRefreshToken++);
+        },
       ),
-      const _ActivityTab(),
+      _ActivityTab(refreshToken: _activityRefreshToken),
       _TradingAccountTab(
         statusFuture: _kisStatusFuture,
         cachedStatus: _cachedKisStatus,
@@ -872,7 +876,14 @@ class _TradingScreenState extends ConsumerState<TradingScreen> {
       ),
       bottomNavigationBar: NavigationBar(
         selectedIndex: _tabIndex,
-        onDestinationSelected: (index) => setState(() => _tabIndex = index),
+        onDestinationSelected: (index) {
+          setState(() {
+            _tabIndex = index;
+            if (index == 3) {
+              _activityRefreshToken++;
+            }
+          });
+        },
         backgroundColor: Colors.white,
         surfaceTintColor: Colors.transparent,
         indicatorColor: MetaServerColors.mint.withValues(alpha: 0.35),
@@ -1923,6 +1934,7 @@ class _OrderTicketTab extends ConsumerStatefulWidget {
     required this.upbitPortfolioFuture,
     required this.cachedUpbitPortfolio,
     required this.onSideChanged,
+    required this.onOrderSubmitted,
   });
 
   final _Instrument instrument;
@@ -1932,6 +1944,7 @@ class _OrderTicketTab extends ConsumerStatefulWidget {
   final Future<UpbitPortfolio> upbitPortfolioFuture;
   final UpbitPortfolio? cachedUpbitPortfolio;
   final ValueChanged<_TradeSide> onSideChanged;
+  final VoidCallback onOrderSubmitted;
 
   @override
   ConsumerState<_OrderTicketTab> createState() => _OrderTicketTabState();
@@ -2731,6 +2744,7 @@ class _OrderTicketTabState extends ConsumerState<_OrderTicketTab> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('$brokerName 주문이 접수되었습니다. 주문번호: $orderNo')),
       );
+      widget.onOrderSubmitted();
     } catch (error) {
       if (!mounted) return;
       final detail = apiFailureMessage(error);
@@ -2880,7 +2894,9 @@ class _RiskNoticeConsentBox extends StatelessWidget {
 }
 
 class _ActivityTab extends ConsumerStatefulWidget {
-  const _ActivityTab();
+  const _ActivityTab({required this.refreshToken});
+
+  final int refreshToken;
 
   @override
   ConsumerState<_ActivityTab> createState() => _ActivityTabState();
@@ -2899,6 +2915,14 @@ class _ActivityTabState extends ConsumerState<_ActivityTab> {
     super.initState();
     _cachedExecutions = _loadCachedExecutions();
     _activityFuture = _loadActivity();
+  }
+
+  @override
+  void didUpdateWidget(covariant _ActivityTab oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.refreshToken != widget.refreshToken) {
+      _refreshActivity();
+    }
   }
 
   Future<KisOrderActivity> _loadActivity() async {

@@ -34,6 +34,7 @@ from app.schemas.trading import (
     TradingConsentStatusResponse,
     TradingConsentType,
     TradingOrderActivityResponse,
+    UsStockMarketCapResponse,
     UpbitConnectionStatusResponse,
     UpbitMarketSearchResponse,
     UpbitOrderActionResponse,
@@ -530,6 +531,20 @@ def market_status(
     if errors:
         response.raw_summary = {**response.raw_summary, "errors": errors}
     return response
+
+
+@router.get("/us-stocks/top", response_model=UsStockMarketCapResponse)
+def top_us_stocks_by_market_cap(
+    limit: int = Query(default=10, ge=1, le=50),
+) -> UsStockMarketCapResponse:
+    try:
+        items = get_yahoo_market_data_client().top_us_market_cap_stocks(limit=limit)
+        return UsStockMarketCapResponse(items=items)
+    except MarketDataError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
 
 
 @router.get("/kis/order-activity", response_model=KisOrderActivityResponse)

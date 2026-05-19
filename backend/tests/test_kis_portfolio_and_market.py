@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import date
 from tempfile import TemporaryDirectory
 import unittest
 
@@ -184,6 +185,91 @@ class KisPortfolioAndMarketTest(unittest.TestCase):
             ["KOSPI", "KOSDAQ", "USD/KRW"],
         )
         self.assertIsNone(status.items[2].value)
+
+    def test_order_activity_queries_krx_and_nxt_for_open_orders(self) -> None:
+        calls: list[tuple[str, str]] = []
+
+        def request_with_headers(*args, **kwargs):
+            path = args[2]
+            self.assertEqual(path, self.client.ORDER_ACTIVITY_PATH)
+            params = kwargs["params"]
+            exchange_code = params["EXCG_ID_DVSN_CD"]
+            ccld_dvsn = params["CCLD_DVSN"]
+            calls.append((exchange_code, ccld_dvsn))
+            output = []
+            if exchange_code == "NXT" and ccld_dvsn == "02":
+                output = [
+                    {
+                        "ord_dt": "20260519",
+                        "ord_tmd": "174201",
+                        "odno": "0000012345",
+                        "ord_gno_brno": "001",
+                        "pdno": "005930",
+                        "prdt_name": "Samsung Electronics",
+                        "sll_buy_dvsn_cd": "02",
+                        "ord_qty": "1",
+                        "tot_ccld_qty": "0",
+                        "rmn_qty": "1",
+                        "ord_unpr": "70000",
+                    }
+                ]
+            return (
+                {"output1": output, "output2": {"ctx_area_fk100": ""}},
+                {"tr_cont": "D"},
+            )
+
+        self.client._request_with_headers = request_with_headers
+
+        activity = self.client.order_activity(
+            start_date=date(2026, 5, 19),
+            end_date=date(2026, 5, 19),
+        )
+
+        self.assertIn(("KRX", "00"), calls)
+        self.assertIn(("KRX", "02"), calls)
+        self.assertIn(("NXT", "00"), calls)
+        self.assertIn(("NXT", "02"), calls)
+        self.assertEqual(len(activity.open_orders), 1)
+        self.assertEqual(activity.open_orders[0].order_no, "0000012345")
+        self.assertEqual(str(activity.open_orders[0].remaining_quantity), "1")
+
+    def test_order_activity_deduplicates_all_and_unfilled_results(self) -> None:
+        def request_with_headers(*args, **kwargs):
+            params = kwargs["params"]
+            output = []
+            if params["EXCG_ID_DVSN_CD"] == "KRX":
+                output = [
+                    {
+                        "ord_dt": "20260519",
+                        "ord_tmd": "090001",
+                        "odno": "0000099999",
+                        "ord_gno_brno": "001",
+                        "pdno": "000660",
+                        "prdt_name": "SK hynix",
+                        "sll_buy_dvsn_cd": "02",
+                        "ord_qty": "3",
+                        "tot_ccld_qty": "0",
+                        "rmn_qty": "2"
+                        if params["CCLD_DVSN"] == "00"
+                        else "3",
+                        "ord_unpr": "180000",
+                    }
+                ]
+            return (
+                {"output1": output, "output2": {"ctx_area_fk100": ""}},
+                {"tr_cont": "D"},
+            )
+
+        self.client._request_with_headers = request_with_headers
+
+        activity = self.client.order_activity(
+            start_date=date(2026, 5, 19),
+            end_date=date(2026, 5, 19),
+        )
+
+        self.assertEqual(len(activity.open_orders), 1)
+        self.assertEqual(activity.open_orders[0].order_no, "0000099999")
+        self.assertEqual(str(activity.open_orders[0].remaining_quantity), "3")
 
     def test_access_token_is_reused_from_disk_cache_after_restart(self) -> None:
         with TemporaryDirectory() as temp_dir:

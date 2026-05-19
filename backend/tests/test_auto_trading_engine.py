@@ -124,6 +124,43 @@ class AutoTradingRiskChecksTest(unittest.TestCase):
             )
         )
 
+    def test_top_stock_rebalance_decision_uses_market_cap_gap(self) -> None:
+        decision = auto_trading_engine._decision(
+            {"strategy_type": "top_stock_rebalance"},
+            {
+                "symbol": "NVDA",
+                "top_stock_rank": 1,
+                "top_stock_name": "NVIDIA Corporation",
+                "top_stock_market_cap_text": "5.38T",
+                "top_stock_market_cap_gap_rate": "8.5",
+                "trigger_change_rate": "3.0",
+                "confirmation_rate": "0.5",
+            },
+            Decimal("-1.2"),
+        )
+
+        self.assertIsNotNone(decision)
+        assert decision is not None
+        self.assertEqual(decision["side"], OrderSide.buy)
+        self.assertIn("NVDA", decision["reason"])
+
+    def test_top_stock_rebalance_waits_when_lead_is_too_small(self) -> None:
+        decision = auto_trading_engine._decision(
+            {"strategy_type": "top_stock_rebalance"},
+            {
+                "symbol": "AAPL",
+                "top_stock_rank": 1,
+                "top_stock_name": "Apple Inc.",
+                "top_stock_market_cap_text": "4.39T",
+                "top_stock_market_cap_gap_rate": "1.0",
+                "trigger_change_rate": "3.0",
+                "confirmation_rate": "0.5",
+            },
+            Decimal("0.2"),
+        )
+
+        self.assertIsNone(decision)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -16,6 +16,7 @@ class AutoStrategyType(str, Enum):
     dca = "dca"
     momentum = "momentum"
     rebalance = "rebalance"
+    top_stock_rebalance = "top_stock_rebalance"
     fear_greed = "fear_greed"
     custom = "custom"
 

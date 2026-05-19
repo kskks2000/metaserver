@@ -372,6 +372,23 @@ class MarketStatusResponse(BaseModel):
     raw_summary: dict[str, Any] = Field(default_factory=dict)
 
 
+class UsStockMarketCapItem(BaseModel):
+    rank: int
+    symbol: str
+    name: str
+    market_cap: Decimal
+    market_cap_text: str
+    price: Decimal | None = None
+    change_rate: Decimal | None = None
+    source: str = "stockanalysis"
+    raw_output: dict[str, Any] = Field(default_factory=dict)
+
+
+class UsStockMarketCapResponse(BaseModel):
+    source: str = "stockanalysis"
+    items: list[UsStockMarketCapItem]
+
+
 class DomesticStockQuoteResponse(BaseModel):
     environment: BrokerEnvironment
     market_code: str

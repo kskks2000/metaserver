@@ -128,6 +128,8 @@ class KisClient:
     TOKEN_CACHE_MIN_TTL = timedelta(minutes=1)
     REQUEST_RETRY_BACKOFF_SECONDS = 0.35
     TRANSIENT_STATUS_CODES = {408, 429, 500, 502, 503, 504}
+    DOMESTIC_ORDER_ACTIVITY_EXCHANGES = ("KRX", "NXT")
+    DOMESTIC_ORDER_ACTIVITY_CCLD_DIVISIONS = ("00", "02")
 
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
@@ -708,9 +710,81 @@ class KisClient:
             "INQR_DVSN_1": "",
             "CTX_AREA_FK100": "",
             "CTX_AREA_NK100": "",
-            "EXCG_ID_DVSN_CD": "KRX",
         }
 
+        raw_items: list[dict[str, Any]] = []
+        summaries: list[dict[str, Any]] = []
+        errors: list[dict[str, str]] = []
+        first_error: KisApiError | None = None
+        for exchange_code in self.DOMESTIC_ORDER_ACTIVITY_EXCHANGES:
+            for ccld_dvsn in self.DOMESTIC_ORDER_ACTIVITY_CCLD_DIVISIONS:
+                query_params = {
+                    **params,
+                    "CCLD_DVSN": ccld_dvsn,
+                    "CTX_AREA_FK100": "",
+                    "CTX_AREA_NK100": "",
+                    "EXCG_ID_DVSN_CD": exchange_code,
+                }
+                try:
+                    page_items, page_summaries = self._order_activity_pages(
+                        credentials=credentials,
+                        env=env,
+                        params=query_params,
+                        exchange_code=exchange_code,
+                        ccld_dvsn=ccld_dvsn,
+                    )
+                except KisApiError as exc:
+                    first_error = first_error or exc
+                    errors.append(
+                        {
+                            "exchange_code": exchange_code,
+                            "ccld_dvsn": ccld_dvsn,
+                            "message": str(exc),
+                        }
+                    )
+                    continue
+                raw_items.extend(page_items)
+                summaries.extend(page_summaries)
+
+        if not raw_items and first_error is not None:
+            raise first_error
+
+        items = [
+            self._activity_item(item)
+            for item in self._dedupe_activity_raw_items(raw_items)
+        ]
+        open_orders = [
+            item
+            for item in items
+            if item.remaining_quantity > 0
+            and not item.canceled
+            and item.status != "거부"
+        ]
+        executions = [item for item in items if item.filled_quantity > 0]
+
+        raw_summary = summaries[0] if summaries else {}
+        if errors:
+            raw_summary = {**raw_summary, "errors": errors}
+
+        return KisOrderActivityResponse(
+            environment=env,
+            account_no_masked=self._mask_full_account(credentials),
+            start_date=start,
+            end_date=end,
+            open_orders=open_orders,
+            executions=executions,
+            raw_summary=raw_summary,
+        )
+
+    def _order_activity_pages(
+        self,
+        *,
+        credentials: KisCredentials,
+        env: BrokerEnvironment,
+        params: dict[str, Any],
+        exchange_code: str,
+        ccld_dvsn: str,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         raw_items: list[dict[str, Any]] = []
         summaries: list[dict[str, Any]] = []
         tr_cont = ""
@@ -723,10 +797,21 @@ class KisClient:
                 tr_cont=tr_cont,
                 params=params,
             )
-            raw_items.extend(self._as_list(data.get("output1")))
+            for item in self._as_list(data.get("output1")):
+                enriched = dict(item)
+                enriched.setdefault("excg_id_dvsn_cd", exchange_code)
+                enriched["_query_ccld_dvsn"] = ccld_dvsn
+                raw_items.append(enriched)
+
             page_summary = self._as_dict(data.get("output2"))
             if page_summary:
-                summaries.append(page_summary)
+                summaries.append(
+                    {
+                        **page_summary,
+                        "excg_id_dvsn_cd": exchange_code,
+                        "ccld_dvsn": ccld_dvsn,
+                    }
+                )
 
             next_tr_cont = str(response_headers.get("tr_cont") or "").strip()
             if next_tr_cont not in {"F", "M"}:
@@ -741,26 +826,53 @@ class KisClient:
             if not params["CTX_AREA_FK100"] and not params["CTX_AREA_NK100"]:
                 break
             tr_cont = "N"
+        return raw_items, summaries
 
-        items = [self._activity_item(item) for item in raw_items]
-        open_orders = [
-            item
-            for item in items
-            if item.remaining_quantity > 0
-            and not item.canceled
-            and item.status != "거부"
-        ]
-        executions = [item for item in items if item.filled_quantity > 0]
+    def _dedupe_activity_raw_items(
+        self,
+        raw_items: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        ordered_keys: list[str] = []
+        by_key: dict[str, dict[str, Any]] = {}
+        for item in raw_items:
+            key = self._activity_raw_item_key(item)
+            previous = by_key.get(key)
+            if previous is None:
+                ordered_keys.append(key)
+                by_key[key] = item
+            elif self._prefer_activity_raw_item(item, previous):
+                by_key[key] = item
+        return [by_key[key] for key in ordered_keys]
 
-        return KisOrderActivityResponse(
-            environment=env,
-            account_no_masked=self._mask_full_account(credentials),
-            start_date=start,
-            end_date=end,
-            open_orders=open_orders,
-            executions=executions,
-            raw_summary=summaries[0] if summaries else {},
-        )
+    def _activity_raw_item_key(self, item: dict[str, Any]) -> str:
+        order_no = self._clean_string(item.get("odno"))
+        if order_no is not None:
+            branch_no = self._clean_string(item.get("ord_gno_brno")) or ""
+            symbol = self._clean_string(item.get("pdno")) or ""
+            return f"{branch_no}|{order_no}|{symbol}"
+        comparable = {
+            key: value
+            for key, value in item.items()
+            if not key.startswith("_query_")
+        }
+        return json.dumps(comparable, sort_keys=True, default=str)
+
+    def _prefer_activity_raw_item(
+        self,
+        candidate: dict[str, Any],
+        previous: dict[str, Any],
+    ) -> bool:
+        candidate_ccld = str(candidate.get("_query_ccld_dvsn") or "")
+        previous_ccld = str(previous.get("_query_ccld_dvsn") or "")
+        if candidate_ccld == "02" and previous_ccld != "02":
+            return True
+        candidate_remaining = self._decimal(candidate.get("rmn_qty")) or Decimal("0")
+        previous_remaining = self._decimal(previous.get("rmn_qty")) or Decimal("0")
+        if candidate_remaining > previous_remaining:
+            return True
+        candidate_filled = self._decimal(candidate.get("tot_ccld_qty")) or Decimal("0")
+        previous_filled = self._decimal(previous.get("tot_ccld_qty")) or Decimal("0")
+        return candidate_filled > previous_filled
 
     def place_domestic_stock_order(
         self,

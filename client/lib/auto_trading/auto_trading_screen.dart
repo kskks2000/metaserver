@@ -211,6 +211,29 @@ const _strategyPresets = <String, _StrategyPreset>{
     limitOffsetRate: '0',
     orderKind: 'limit',
   ),
+  'top_stock_rebalance': _StrategyPreset(
+    type: 'top_stock_rebalance',
+    label: '1등주',
+    icon: Icons.show_chart_rounded,
+    name: '미국 1등주 리밸런싱',
+    description: '미국 시가총액 리더를 재확인하고, 2위와의 격차가 충분할 때만 목표 비중 매수 신호를 생성합니다.',
+    triggerLabel: '2위 대비 최소 격차(%)',
+    triggerChangeRate: '3.0',
+    fearGreedSellThreshold: '75',
+    signalSide: 'buy',
+    maxOrderAmount: '1000',
+    maxDailyLossAmount: '100',
+    cooldownSeconds: 604800,
+    confirmationRate: '0.5',
+    takeProfitRate: '0',
+    stopLossRate: '0',
+    entryAllocationRate: '100',
+    maxSlices: 1,
+    gridRangeRate: '0',
+    maxDailyTradeCount: 1,
+    limitOffsetRate: '0.05',
+    orderKind: 'limit',
+  ),
   'fear_greed': _StrategyPreset(
     type: 'fear_greed',
     label: '공포탐욕',
@@ -1245,7 +1268,9 @@ class _StrategyTabState extends ConsumerState<_StrategyTab> {
                   ),
                   _TextInput(
                     controller: _symbolController,
-                    label: '종목/코인 검색',
+                    label: _strategyType == 'top_stock_rebalance'
+                        ? '기본 후보 종목'
+                        : '종목/코인 검색',
                     icon: Icons.search_rounded,
                     hintText: _symbolHintForAutoAsset(_assetClass),
                     keyboardType: TextInputType.text,
@@ -1262,6 +1287,10 @@ class _StrategyTabState extends ConsumerState<_StrategyTab> {
                 error: _symbolSearchError,
                 onSelected: _selectSymbol,
               ),
+              if (_strategyType == 'top_stock_rebalance') ...[
+                const SizedBox(height: 10),
+                const _TopStockDataNote(),
+              ],
               const SizedBox(height: 14),
               _FieldTitle(icon: Icons.category_outlined, label: '전략 유형'),
               const SizedBox(height: 8),
@@ -1280,7 +1309,8 @@ class _StrategyTabState extends ConsumerState<_StrategyTab> {
               const SizedBox(height: 14),
               _StrategyBrief(preset: preset),
               const SizedBox(height: 14),
-              if (_strategyType != 'dca') ...[
+              if (_strategyType != 'dca' &&
+                  _strategyType != 'top_stock_rebalance') ...[
                 _FieldTitle(icon: Icons.swap_vert_rounded, label: '신호 방향'),
                 const SizedBox(height: 8),
                 _directionSelector(
@@ -1341,20 +1371,29 @@ class _StrategyTabState extends ConsumerState<_StrategyTab> {
                 ],
               ),
               const SizedBox(height: 14),
-              _FieldTitle(
-                icon: Icons.timer_outlined,
-                label: '재평가 대기 $_cooldownSeconds초',
-              ),
-              Slider(
-                value: _cooldownSeconds.toDouble(),
-                min: 30,
-                max: 300,
-                divisions: 9,
-                label: '$_cooldownSeconds초',
-                onChanged: (value) => setState(() {
-                  _cooldownSeconds = value.round();
-                }),
-              ),
+              if (_strategyType == 'top_stock_rebalance') ...[
+                const _FieldTitle(
+                  icon: Icons.event_repeat_rounded,
+                  label: '리밸런싱 주기',
+                ),
+                const SizedBox(height: 8),
+                _TopStockCadenceCard(label: _cooldownLabel(_cooldownSeconds)),
+              ] else ...[
+                _FieldTitle(
+                  icon: Icons.timer_outlined,
+                  label: '재평가 대기 ${_cooldownLabel(_cooldownSeconds)}',
+                ),
+                Slider(
+                  value: _cooldownSeconds.toDouble(),
+                  min: 30,
+                  max: 300,
+                  divisions: 9,
+                  label: _cooldownLabel(_cooldownSeconds),
+                  onChanged: (value) => setState(() {
+                    _cooldownSeconds = value.round();
+                  }),
+                ),
+              ],
               const SizedBox(height: 6),
               FilledButton.icon(
                 onPressed: widget.saving ? null : _saveDraft,
@@ -1475,7 +1514,8 @@ class _StrategyTabState extends ConsumerState<_StrategyTab> {
 
     if (_strategyType == 'momentum' ||
         _strategyType == 'condition' ||
-        _strategyType == 'rebalance') {
+        _strategyType == 'rebalance' ||
+        _strategyType == 'top_stock_rebalance') {
       fields.add(
         _TextInput(
           controller: _confirmationController,
@@ -1511,7 +1551,8 @@ class _StrategyTabState extends ConsumerState<_StrategyTab> {
       );
     }
 
-    if (_strategyType != 'rebalance') {
+    if (_strategyType != 'rebalance' &&
+        _strategyType != 'top_stock_rebalance') {
       fields
         ..add(
           _TextInput(
@@ -1637,6 +1678,12 @@ class _StrategyTabState extends ConsumerState<_StrategyTab> {
       _assetClass = 'crypto';
       _market = 'UPBIT';
       _symbolController.text = 'KRW-BTC';
+      _remoteSymbolOptions = const [];
+      _symbolSearchError = null;
+    } else if (type == 'top_stock_rebalance') {
+      _assetClass = 'overseas_stock';
+      _market = 'NASDAQ';
+      _symbolController.text = 'NVDA';
       _remoteSymbolOptions = const [];
       _symbolSearchError = null;
     }
@@ -2058,10 +2105,10 @@ class _StrategyTypeOption extends StatelessWidget {
     return FilterChip(
       selected: selected,
       onSelected: (_) => onSelected(),
-      avatar: Icon(
-        preset.icon,
+      avatar: _StrategyPresetGlyph(
+        preset: preset,
+        selected: selected,
         size: 18,
-        color: selected ? MetaServerColors.ink : MetaServerColors.cyan,
       ),
       label: Text(preset.label),
       showCheckmark: false,
@@ -2082,6 +2129,7 @@ class _StrategyBrief extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final chips = _strategyBriefChips(preset);
     return Container(
       padding: const EdgeInsets.all(13),
       decoration: BoxDecoration(
@@ -2094,14 +2142,14 @@ class _StrategyBrief extends StatelessWidget {
         children: [
           Row(
             children: [
-              _SoftIcon(icon: preset.icon, size: 38),
+              _StrategyPresetGlyph(preset: preset, selected: true, size: 38),
               const SizedBox(width: 10),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      '${preset.label} 전문가 프리셋',
+                      _strategyBriefTitle(preset),
                       style: const TextStyle(fontWeight: FontWeight.w900),
                     ),
                     const SizedBox(height: 3),
@@ -2119,28 +2167,286 @@ class _StrategyBrief extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 10),
+          if (preset.type == 'top_stock_rebalance') ...[
+            const _TopStockBriefGrid(),
+            const SizedBox(height: 10),
+          ],
           Wrap(
             spacing: 8,
             runSpacing: 8,
             children: [
-              _InfoChip(
-                icon: Icons.percent_rounded,
-                label: '${preset.triggerLabel} ${preset.triggerChangeRate}%',
-              ),
-              _InfoChip(
-                icon: Icons.swap_vert_rounded,
-                label: _sideLabel(preset.signalSide),
-              ),
-              _InfoChip(
-                icon: Icons.payments_outlined,
-                label: _won(preset.maxOrderAmount),
-              ),
-              _InfoChip(
-                icon: Icons.timer_outlined,
-                label: '${preset.cooldownSeconds}초',
-              ),
+              for (final chip in chips)
+                _InfoChip(icon: chip.icon, label: chip.label),
             ],
           ),
+        ],
+      ),
+    );
+  }
+}
+
+class _StrategyBriefChip {
+  const _StrategyBriefChip({required this.icon, required this.label});
+
+  final IconData icon;
+  final String label;
+}
+
+List<_StrategyBriefChip> _strategyBriefChips(_StrategyPreset preset) {
+  if (preset.type == 'top_stock_rebalance') {
+    return [
+      const _StrategyBriefChip(
+        icon: Icons.show_chart_rounded,
+        label: '시총 1위 데이터',
+      ),
+      _StrategyBriefChip(
+        icon: Icons.percent_rounded,
+        label:
+            '격차 ${preset.triggerChangeRate}% + 확인 ${preset.confirmationRate}%',
+      ),
+      _StrategyBriefChip(
+        icon: Icons.pie_chart_outline_rounded,
+        label: '목표 비중 ${preset.entryAllocationRate}%',
+      ),
+      _StrategyBriefChip(
+        icon: Icons.event_repeat_rounded,
+        label: _cooldownLabel(preset.cooldownSeconds),
+      ),
+      _StrategyBriefChip(
+        icon: Icons.price_change_outlined,
+        label: '지정가 +${preset.limitOffsetRate}%',
+      ),
+    ];
+  }
+  return [
+    _StrategyBriefChip(
+      icon: Icons.percent_rounded,
+      label: '${preset.triggerLabel} ${preset.triggerChangeRate}%',
+    ),
+    _StrategyBriefChip(
+      icon: Icons.swap_vert_rounded,
+      label: _sideLabel(preset.signalSide),
+    ),
+    _StrategyBriefChip(
+      icon: Icons.payments_outlined,
+      label: _won(preset.maxOrderAmount),
+    ),
+    _StrategyBriefChip(
+      icon: Icons.timer_outlined,
+      label: _cooldownLabel(preset.cooldownSeconds),
+    ),
+  ];
+}
+
+String _strategyBriefTitle(_StrategyPreset preset) {
+  if (preset.type == 'top_stock_rebalance') {
+    return '미국 시총 리더 리밸런싱';
+  }
+  return '${preset.label} 전문가 프리셋';
+}
+
+class _StrategyPresetGlyph extends StatelessWidget {
+  const _StrategyPresetGlyph({
+    required this.preset,
+    required this.selected,
+    required this.size,
+  });
+
+  final _StrategyPreset preset;
+  final bool selected;
+  final double size;
+
+  @override
+  Widget build(BuildContext context) {
+    if (preset.type != 'top_stock_rebalance') {
+      if (size <= 20) {
+        return Icon(
+          preset.icon,
+          size: size,
+          color: selected ? MetaServerColors.ink : MetaServerColors.cyan,
+        );
+      }
+      return _SoftIcon(icon: preset.icon, size: size);
+    }
+
+    final color = selected ? MetaServerColors.cyan : MetaServerColors.cyan;
+    return Container(
+      width: size,
+      height: size,
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: selected ? 0.18 : 0.1),
+        borderRadius: BorderRadius.circular(size <= 20 ? 5 : 8),
+        border: Border.all(color: color.withValues(alpha: 0.28)),
+      ),
+      child: Stack(
+        alignment: Alignment.center,
+        children: [
+          Text(
+            '1',
+            style: TextStyle(
+              color: selected ? MetaServerColors.ink : color,
+              fontSize: size * 0.55,
+              fontWeight: FontWeight.w900,
+              height: 1,
+            ),
+          ),
+          if (size > 24)
+            Positioned(
+              right: size * 0.14,
+              bottom: size * 0.12,
+              child: Icon(
+                Icons.trending_up_rounded,
+                color: color,
+                size: size * 0.28,
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _TopStockBriefGrid extends StatelessWidget {
+  const _TopStockBriefGrid();
+
+  @override
+  Widget build(BuildContext context) {
+    return _ResponsiveGrid(
+      minTileWidth: 145,
+      children: const [
+        _TopStockBriefMetric(
+          icon: Icons.dataset_outlined,
+          label: '데이터 기준',
+          value: '미국 시가총액',
+        ),
+        _TopStockBriefMetric(
+          icon: Icons.verified_outlined,
+          label: '선정 방식',
+          value: '1위 재확인',
+        ),
+        _TopStockBriefMetric(
+          icon: Icons.fact_check_outlined,
+          label: '필터',
+          value: '2위 격차',
+        ),
+      ],
+    );
+  }
+}
+
+class _TopStockBriefMetric extends StatelessWidget {
+  const _TopStockBriefMetric({
+    required this.icon,
+    required this.label,
+    required this.value,
+  });
+
+  final IconData icon;
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 9),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: MetaServerColors.line),
+      ),
+      child: Row(
+        children: [
+          Icon(icon, color: MetaServerColors.cyan, size: 17),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  label,
+                  style: TextStyle(
+                    color: MetaServerColors.ink.withValues(alpha: 0.58),
+                    fontSize: 11,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  value,
+                  style: const TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w900,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _TopStockDataNote extends StatelessWidget {
+  const _TopStockDataNote();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: MetaServerColors.cyan.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(8),
+        border:
+            Border.all(color: MetaServerColors.cyan.withValues(alpha: 0.22)),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Icon(Icons.show_chart_rounded,
+              color: MetaServerColors.cyan, size: 19),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              '저장된 후보는 기본값입니다. 평가 시점에는 미국 시가총액 순위를 다시 조회해 현재 1위 종목으로 판단합니다.',
+              style: TextStyle(
+                color: MetaServerColors.ink.withValues(alpha: 0.72),
+                fontSize: 12,
+                fontWeight: FontWeight.w800,
+                height: 1.35,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _TopStockCadenceCard extends StatelessWidget {
+  const _TopStockCadenceCard({required this.label});
+
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: MetaServerColors.canvas,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: MetaServerColors.line),
+      ),
+      child: Wrap(
+        spacing: 8,
+        runSpacing: 8,
+        children: [
+          _InfoChip(icon: Icons.event_repeat_rounded, label: label),
+          const _InfoChip(icon: Icons.show_chart_rounded, label: '1위 재확인'),
+          const _InfoChip(icon: Icons.verified_outlined, label: '격차 필터'),
+          const _InfoChip(icon: Icons.lock_outline_rounded, label: '승인 보호'),
         ],
       ),
     );
@@ -2550,7 +2856,7 @@ class _StrategyCard extends StatelessWidget {
               ),
               _InfoChip(
                 icon: Icons.timer_outlined,
-                label: '${strategy.cooldownSeconds}초 대기',
+                label: '${_cooldownLabel(strategy.cooldownSeconds)} 대기',
               ),
               if (triggerRate != null && triggerRate.isNotEmpty)
                 _InfoChip(
@@ -3486,6 +3792,7 @@ IconData _strategyIcon(String type) {
     'momentum' => Icons.trending_up_rounded,
     'dca' => Icons.stacked_line_chart_rounded,
     'rebalance' => Icons.balance_rounded,
+    'top_stock_rebalance' => Icons.show_chart_rounded,
     'fear_greed' => Icons.psychology_alt_rounded,
     'grid' => Icons.grid_view_rounded,
     _ => Icons.rule_rounded,
@@ -3497,10 +3804,25 @@ String _strategyLabel(String type) {
     'momentum' => '모멘텀',
     'dca' => '분할매수',
     'rebalance' => '리밸런싱',
+    'top_stock_rebalance' => '1등주',
     'fear_greed' => '공포탐욕',
     'grid' => '그리드',
     _ => '조건식',
   };
+}
+
+String _cooldownLabel(int seconds) {
+  if (seconds >= 86400 && seconds % 86400 == 0) {
+    final days = seconds ~/ 86400;
+    return days == 7 ? '주 1회' : '$days일';
+  }
+  if (seconds >= 3600 && seconds % 3600 == 0) {
+    return '${seconds ~/ 3600}시간';
+  }
+  if (seconds >= 60 && seconds % 60 == 0) {
+    return '${seconds ~/ 60}분';
+  }
+  return '$seconds초';
 }
 
 String _statusLabel(String status) {

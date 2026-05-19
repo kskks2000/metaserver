@@ -28,6 +28,7 @@ BEGIN
             'dca',
             'momentum',
             'rebalance',
+            'top_stock_rebalance',
             'fear_greed',
             'custom'
         );
