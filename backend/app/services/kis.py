@@ -19,6 +19,9 @@ from app.core.config import Settings, get_settings
 from app.schemas.trading import (
     AssetClass,
     BrokerEnvironment,
+    DomesticStockOrderActionResponse,
+    DomesticStockOrderAmendRequest,
+    DomesticStockOrderCancelRequest,
     DomesticStockOrderRequest,
     DomesticStockOrderResponse,
     DomesticStockQuoteResponse,
@@ -98,6 +101,7 @@ class KisClient:
     QUOTE_PATH = "/uapi/domestic-stock/v1/quotations/inquire-price"
     OVERSEAS_QUOTE_PATH = "/uapi/overseas-price/v1/quotations/price"
     ORDER_PATH = "/uapi/domestic-stock/v1/trading/order-cash"
+    ORDER_AMEND_CANCEL_PATH = "/uapi/domestic-stock/v1/trading/order-rvsecncl"
     OVERSEAS_ORDER_PATH = "/uapi/overseas-stock/v1/trading/order"
     BALANCE_PATH = "/uapi/domestic-stock/v1/trading/inquire-balance"
     OVERSEAS_PRESENT_BALANCE_PATH = (
@@ -935,6 +939,116 @@ class KisClient:
             dry_run=False,
         )
 
+    def cancel_domestic_stock_order(
+        self,
+        payload: DomesticStockOrderCancelRequest,
+    ) -> DomesticStockOrderActionResponse:
+        return self._domestic_stock_order_action(payload=payload, action="cancel")
+
+    def amend_domestic_stock_order(
+        self,
+        payload: DomesticStockOrderAmendRequest,
+    ) -> DomesticStockOrderActionResponse:
+        return self._domestic_stock_order_action(payload=payload, action="amend")
+
+    def _domestic_stock_order_action(
+        self,
+        *,
+        payload: DomesticStockOrderCancelRequest | DomesticStockOrderAmendRequest,
+        action: str,
+    ) -> DomesticStockOrderActionResponse:
+        env = payload.environment or BrokerEnvironment(self._settings.kis_default_environment)
+        credentials = self._credentials(env)
+        if (
+            env == BrokerEnvironment.live
+            and not self._settings.kis_live_trading_enabled
+            and not payload.dry_run
+        ):
+            raise KisConfigurationError(
+                "Live KIS orders are disabled. Set KIS_LIVE_TRADING_ENABLED=true to allow them."
+            )
+
+        order_id = payload.order_id.strip()
+        branch_no = payload.branch_no.strip()
+        order_division = payload.order_division_code.strip() or "00"
+        exchange_code = payload.exchange_code.strip().upper() or "KRX"
+        if not order_id:
+            raise KisOrderValidationError("Original KIS order number is required.")
+        if not branch_no:
+            raise KisOrderValidationError("KIS order branch number is required.")
+
+        action_code = "02" if action == "cancel" else "01"
+        order_price = (
+            Decimal("0")
+            if action == "cancel"
+            else getattr(payload, "price", Decimal("0"))
+        )
+        if action == "amend" and order_price <= 0:
+            raise KisOrderValidationError("Domestic stock amend orders require a price.")
+        order_quantity = 0 if payload.use_remaining_quantity else payload.quantity or 0
+        if not payload.use_remaining_quantity and order_quantity <= 0:
+            raise KisOrderValidationError(
+                "Domestic stock order action quantity is required."
+            )
+
+        tr_id = self._order_amend_cancel_tr_id(env)
+        request_payload = self._order_amend_cancel_payload(
+            credentials=credentials,
+            order_id=order_id,
+            branch_no=branch_no,
+            order_division=order_division,
+            action_code=action_code,
+            order_quantity=order_quantity,
+            order_price=order_price,
+            use_remaining_quantity=payload.use_remaining_quantity,
+            exchange_code=exchange_code,
+            condition_price=getattr(payload, "condition_price", None),
+        )
+
+        if payload.dry_run:
+            return self._order_action_response(
+                payload=payload,
+                env=env,
+                action=action,
+                order_id=order_id,
+                branch_no=branch_no,
+                order_division=order_division,
+                exchange_code=exchange_code,
+                order_quantity=order_quantity,
+                order_price=order_price,
+                tr_id=tr_id,
+                request_payload=request_payload,
+                data={"rt_cd": "0", "msg_cd": "DRY_RUN", "msg1": "Dry run only."},
+                raw_output={},
+                dry_run=True,
+            )
+
+        data = self._request(
+            credentials,
+            "POST",
+            self.ORDER_AMEND_CANCEL_PATH,
+            tr_id=tr_id,
+            json_payload=request_payload,
+            include_hashkey=self._settings.kis_include_hashkey,
+        )
+        raw_output = self._as_dict(data.get("output"))
+        return self._order_action_response(
+            payload=payload,
+            env=env,
+            action=action,
+            order_id=order_id,
+            branch_no=branch_no,
+            order_division=order_division,
+            exchange_code=exchange_code,
+            order_quantity=order_quantity,
+            order_price=order_price,
+            tr_id=tr_id,
+            request_payload=request_payload,
+            data=data,
+            raw_output=raw_output,
+            dry_run=False,
+        )
+
     def place_overseas_stock_order(
         self,
         payload: OverseasStockOrderRequest,
@@ -1446,6 +1560,11 @@ class KisClient:
             return "TTTC0012U" if side == OrderSide.buy else "TTTC0011U"
         return "VTTC0012U" if side == OrderSide.buy else "VTTC0011U"
 
+    def _order_amend_cancel_tr_id(self, environment: BrokerEnvironment) -> str:
+        if self._settings.kis_order_protocol == "legacy":
+            return "TTTC0803U" if environment == BrokerEnvironment.live else "VTTC0803U"
+        return "TTTC0013U" if environment == BrokerEnvironment.live else "VTTC0013U"
+
     @staticmethod
     def _balance_tr_id(environment: BrokerEnvironment) -> str:
         if environment == BrokerEnvironment.live:
@@ -1559,6 +1678,8 @@ class KisClient:
             order_no=self._clean_string(item.get("odno")),
             branch_no=self._clean_string(item.get("ord_gno_brno")),
             original_order_no=self._clean_string(item.get("orgn_odno")),
+            order_division_code=self._clean_string(item.get("ord_dvsn")),
+            exchange_code=self._clean_string(item.get("excg_id_dvsn_cd")),
             symbol=str(item.get("pdno") or ""),
             name=str(item.get("prdt_name") or item.get("pdno") or ""),
             side=self._activity_side(item),
@@ -1774,6 +1895,40 @@ class KisClient:
             )
         return data
 
+    def _order_amend_cancel_payload(
+        self,
+        *,
+        credentials: KisCredentials,
+        order_id: str,
+        branch_no: str,
+        order_division: str,
+        action_code: str,
+        order_quantity: int,
+        order_price: Decimal,
+        use_remaining_quantity: bool,
+        exchange_code: str,
+        condition_price: Decimal | None,
+    ) -> dict[str, str]:
+        data = {
+            "CANO": credentials.account_no,
+            "ACNT_PRDT_CD": credentials.product_code,
+            "KRX_FWDG_ORD_ORGNO": branch_no,
+            "ORGN_ODNO": order_id,
+            "ORD_DVSN": order_division,
+            "RVSE_CNCL_DVSN_CD": action_code,
+            "ORD_QTY": str(order_quantity),
+            "ORD_UNPR": self._decimal_as_api_int(order_price),
+            "QTY_ALL_ORD_YN": "Y" if use_remaining_quantity else "N",
+        }
+        if self._settings.kis_order_protocol == "modern":
+            data["EXCG_ID_DVSN_CD"] = exchange_code
+            data["CNDT_PRIC"] = (
+                self._decimal_as_api_int(condition_price)
+                if condition_price is not None
+                else ""
+            )
+        return data
+
     @staticmethod
     def _overseas_order_division(payload: OverseasStockOrderRequest) -> str:
         if payload.order_kind != OrderKind.limit:
@@ -1841,6 +1996,45 @@ class KisClient:
             tr_id=tr_id,
             dry_run=dry_run,
             broker_order_no=raw_output.get("ODNO"),
+            broker_order_time=raw_output.get("ORD_TMD"),
+            kis_message_code=data.get("msg_cd"),
+            kis_message=data.get("msg1"),
+            request_payload=KisClient._sanitize_order_payload(request_payload),
+            raw_output=raw_output,
+        )
+
+    @staticmethod
+    def _order_action_response(
+        *,
+        payload: DomesticStockOrderCancelRequest | DomesticStockOrderAmendRequest,
+        env: BrokerEnvironment,
+        action: str,
+        order_id: str,
+        branch_no: str,
+        order_division: str,
+        exchange_code: str,
+        order_quantity: int,
+        order_price: Decimal,
+        tr_id: str,
+        request_payload: dict[str, Any],
+        data: dict[str, Any],
+        raw_output: dict[str, Any],
+        dry_run: bool,
+    ) -> DomesticStockOrderActionResponse:
+        return DomesticStockOrderActionResponse(
+            environment=env,
+            action=action,
+            order_id=order_id,
+            branch_no=branch_no,
+            order_division_code=order_division,
+            quantity=order_quantity,
+            use_remaining_quantity=payload.use_remaining_quantity,
+            exchange_code=exchange_code,
+            price=order_price,
+            tr_id=tr_id,
+            dry_run=dry_run,
+            broker_order_no=order_id,
+            new_broker_order_no=raw_output.get("ODNO"),
             broker_order_time=raw_output.get("ORD_TMD"),
             kis_message_code=data.get("msg_cd"),
             kis_message=data.get("msg1"),

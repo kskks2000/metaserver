@@ -16,6 +16,9 @@ from app.schemas.auth import AuthSessionRequest
 from app.schemas.auth import FirebasePrincipal
 from app.schemas.trading import (
     BrokerEnvironment,
+    DomesticStockOrderActionResponse,
+    DomesticStockOrderAmendRequest,
+    DomesticStockOrderCancelRequest,
     DomesticStockOrderRequest,
     DomesticStockOrderResponse,
     DomesticStockQuoteResponse,
@@ -586,6 +589,40 @@ def place_domestic_stock_order(
     payload.exchange_code = payload.exchange_code.upper()
     try:
         return get_kis_client().place_domestic_stock_order(payload)
+    except (KisConfigurationError, KisOrderValidationError, KisApiError) as exc:
+        _raise_kis_error(exc)
+        raise
+
+
+@router.post(
+    "/domestic-stocks/orders/cancel",
+    response_model=DomesticStockOrderActionResponse,
+)
+def cancel_domestic_stock_order(
+    payload: DomesticStockOrderCancelRequest,
+    principal: FirebasePrincipal = Depends(get_current_principal),
+) -> DomesticStockOrderActionResponse:
+    del principal
+    payload.exchange_code = payload.exchange_code.upper()
+    try:
+        return get_kis_client().cancel_domestic_stock_order(payload)
+    except (KisConfigurationError, KisOrderValidationError, KisApiError) as exc:
+        _raise_kis_error(exc)
+        raise
+
+
+@router.post(
+    "/domestic-stocks/orders/amend",
+    response_model=DomesticStockOrderActionResponse,
+)
+def amend_domestic_stock_order(
+    payload: DomesticStockOrderAmendRequest,
+    principal: FirebasePrincipal = Depends(get_current_principal),
+) -> DomesticStockOrderActionResponse:
+    del principal
+    payload.exchange_code = payload.exchange_code.upper()
+    try:
+        return get_kis_client().amend_domestic_stock_order(payload)
     except (KisConfigurationError, KisOrderValidationError, KisApiError) as exc:
         _raise_kis_error(exc)
         raise

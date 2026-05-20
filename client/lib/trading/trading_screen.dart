@@ -3013,12 +3013,13 @@ class _ActivityTabState extends ConsumerState<_ActivityTab> {
   }
 
   Future<void> _showCancelOrderDialog(KisOrderActivityItem order) async {
+    final quantityUnit = _activityQuantityUnit(order);
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('미체결 주문 취소'),
         content: Text(
-          '${order.name} ${_cryptoBaseSymbol(order.symbol)} 주문을 취소합니다.\n남은 수량 ${_formatQuantity(order.remainingQuantity)}개',
+          '${order.name} ${order.symbol} 주문을 취소합니다.\n남은 수량 ${_formatQuantity(order.remainingQuantity)}$quantityUnit',
         ),
         actions: [
           TextButton(
@@ -3034,17 +3035,66 @@ class _ActivityTabState extends ConsumerState<_ActivityTab> {
       ),
     );
     if (confirmed != true) return;
-    await _withOrderAction(order, () async {
-      final orderId = order.orderNo!.trim();
-      await ref.read(tradingRepositoryProvider).cancelUpbitOrder(orderId);
+    if (!order.isCrypto && (order.branchNo?.trim().isEmpty ?? true)) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Upbit 취소 주문을 전송했습니다.')),
+        const SnackBar(
+          content: Text('주문조직번호를 확인할 수 없습니다. 새로고침 후 다시 시도해 주세요.'),
+        ),
+      );
+      return;
+    }
+    await _withOrderAction(order, () async {
+      final orderId = order.orderNo!.trim();
+      if (order.isCrypto) {
+        await ref.read(tradingRepositoryProvider).cancelUpbitOrder(orderId);
+      } else {
+        await ref.read(tradingRepositoryProvider).cancelDomesticStockOrder(
+              DomesticStockOrderCancelDraft(
+                orderId: orderId,
+                branchNo: _requiredDomesticBranchNo(order),
+                orderDivisionCode: _domesticOrderDivisionCode(order),
+                exchangeCode: _domesticExchangeCode(order),
+              ),
+            );
+      }
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            order.isCrypto ? 'Upbit 취소 주문을 전송했습니다.' : '국내주식 취소 주문을 전송했습니다.',
+          ),
+        ),
       );
     });
   }
 
   Future<void> _showAmendOrderDialog(KisOrderActivityItem order) async {
+    if (!order.isCrypto) {
+      final result = await showDialog<DomesticStockOrderAmendDraft>(
+        context: context,
+        builder: (context) => _DomesticStockAmendOrderDialog(order: order),
+      );
+      if (result == null) return;
+      await _withOrderAction(order, () async {
+        final response = await ref
+            .read(tradingRepositoryProvider)
+            .amendDomesticStockOrder(result);
+        if (!mounted) return;
+        final newOrderNo = response.newBrokerOrderNo;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              newOrderNo == null || newOrderNo.isEmpty
+                  ? '국내주식 정정 주문을 전송했습니다.'
+                  : '국내주식 정정 주문을 전송했습니다. 새 주문번호: $newOrderNo',
+            ),
+          ),
+        );
+      });
+      return;
+    }
+
     final result = await showDialog<UpbitOrderAmendDraft>(
       context: context,
       builder: (context) => _UpbitAmendOrderDialog(order: order),
@@ -3105,10 +3155,10 @@ class _ActivityTabState extends ConsumerState<_ActivityTab> {
                       _OrderTile(
                         order: order,
                         working: _workingOrderId == order.orderNo,
-                        onAmend: order.isCrypto
+                        onAmend: order.supportsOrderActions
                             ? () => _showAmendOrderDialog(order)
                             : null,
-                        onCancel: order.isCrypto
+                        onCancel: order.supportsOrderActions
                             ? () => _showCancelOrderDialog(order)
                             : null,
                       ),
@@ -3399,6 +3449,162 @@ class _UpbitAmendOrderDialogState extends State<_UpbitAmendOrderDialog> {
     Navigator.of(context).pop(
       UpbitOrderAmendDraft(
         orderId: orderId,
+        price: price,
+        useRemainingQuantity: _useRemainingQuantity,
+        quantity: quantity,
+      ),
+    );
+  }
+}
+
+class _DomesticStockAmendOrderDialog extends StatefulWidget {
+  const _DomesticStockAmendOrderDialog({required this.order});
+
+  final KisOrderActivityItem order;
+
+  @override
+  State<_DomesticStockAmendOrderDialog> createState() =>
+      _DomesticStockAmendOrderDialogState();
+}
+
+class _DomesticStockAmendOrderDialogState
+    extends State<_DomesticStockAmendOrderDialog> {
+  late final TextEditingController _priceController;
+  late final TextEditingController _quantityController;
+  bool _useRemainingQuantity = true;
+  String? _errorMessage;
+
+  @override
+  void initState() {
+    super.initState();
+    final price =
+        widget.order.price > 0 ? widget.order.price : widget.order.averagePrice;
+    _priceController = TextEditingController(
+      text: price > 0 ? formatIntegerInputText(price.round()) : '',
+    );
+    _quantityController = TextEditingController(
+      text: widget.order.remainingQuantity > 0
+          ? formatIntegerInputText(widget.order.remainingQuantity.round())
+          : '',
+    );
+  }
+
+  @override
+  void dispose() {
+    _priceController.dispose();
+    _quantityController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('국내주식 주문 정정'),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text(
+              '${widget.order.name} · ${widget.order.symbol}',
+              style: const TextStyle(fontWeight: FontWeight.w900),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              '남은 수량 ${_formatQuantity(widget.order.remainingQuantity)}주',
+              style: TextStyle(
+                color: MetaServerColors.ink.withValues(alpha: 0.64),
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            const SizedBox(height: 14),
+            TextField(
+              controller: _priceController,
+              keyboardType: TextInputType.number,
+              inputFormatters: const [ThousandsSeparatorInputFormatter()],
+              decoration: const InputDecoration(
+                labelText: '정정 가격',
+                suffixText: '원',
+              ),
+              onChanged: (_) => setState(() => _errorMessage = null),
+            ),
+            const SizedBox(height: 10),
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              value: _useRemainingQuantity,
+              onChanged: (value) => setState(() {
+                _useRemainingQuantity = value;
+                _errorMessage = null;
+              }),
+              title: const Text('남은 수량 그대로 정정'),
+              subtitle: const Text('부분체결된 주문도 현재 미체결 잔량만 정정합니다.'),
+            ),
+            TextField(
+              controller: _quantityController,
+              enabled: !_useRemainingQuantity,
+              keyboardType: TextInputType.number,
+              inputFormatters: const [ThousandsSeparatorInputFormatter()],
+              decoration: const InputDecoration(
+                labelText: '새 주문 수량',
+                suffixText: '주',
+              ),
+              onChanged: (_) => setState(() => _errorMessage = null),
+            ),
+            if (_errorMessage != null) ...[
+              const SizedBox(height: 10),
+              Text(
+                _errorMessage!,
+                style: const TextStyle(
+                  color: MetaServerColors.danger,
+                  fontWeight: FontWeight.w900,
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('닫기'),
+        ),
+        FilledButton.icon(
+          onPressed: _submit,
+          icon: const Icon(Icons.edit_rounded),
+          label: const Text('정정 전송'),
+        ),
+      ],
+    );
+  }
+
+  void _submit() {
+    final orderId = widget.order.orderNo?.trim() ?? '';
+    final branchNo = widget.order.branchNo?.trim() ?? '';
+    final price = int.tryParse(removeNumberGrouping(_priceController.text));
+    final quantity =
+        int.tryParse(removeNumberGrouping(_quantityController.text));
+    if (orderId.isEmpty) {
+      setState(() => _errorMessage = '주문번호를 확인할 수 없습니다.');
+      return;
+    }
+    if (branchNo.isEmpty) {
+      setState(() => _errorMessage = '주문조직번호를 확인할 수 없습니다.');
+      return;
+    }
+    if (price == null || price <= 0) {
+      setState(() => _errorMessage = '정정 가격을 입력해 주세요.');
+      return;
+    }
+    if (!_useRemainingQuantity && (quantity == null || quantity <= 0)) {
+      setState(() => _errorMessage = '새 주문 수량을 입력해 주세요.');
+      return;
+    }
+    Navigator.of(context).pop(
+      DomesticStockOrderAmendDraft(
+        orderId: orderId,
+        branchNo: branchNo,
+        orderDivisionCode: _domesticOrderDivisionCode(widget.order),
+        exchangeCode: _domesticExchangeCode(widget.order),
         price: price,
         useRemainingQuantity: _useRemainingQuantity,
         quantity: quantity,
@@ -6886,6 +7092,29 @@ DateTime? _executionDate(KisOrderActivityItem item) {
 String _orderNoSuffix(String? orderNo) {
   if (orderNo == null || orderNo.trim().isEmpty) return '';
   return ' · 주문번호 ${orderNo.trim()}';
+}
+
+String _activityQuantityUnit(KisOrderActivityItem order) {
+  return order.isCrypto ? _cryptoBaseSymbol(order.symbol) : '주';
+}
+
+String _requiredDomesticBranchNo(KisOrderActivityItem order) {
+  return order.branchNo?.trim() ?? '';
+}
+
+String _domesticOrderDivisionCode(KisOrderActivityItem order) {
+  final code = order.orderDivisionCode?.trim();
+  if (code != null && code.isNotEmpty) return code;
+  final name = order.orderKindName?.trim() ?? '';
+  if (name.contains('시장')) return '01';
+  return '00';
+}
+
+String _domesticExchangeCode(KisOrderActivityItem order) {
+  final code = order.exchangeCode?.trim().toUpperCase();
+  if (code != null && code.isNotEmpty) return code;
+  final market = order.market.trim().toUpperCase();
+  return market == 'NXT' ? 'NXT' : 'KRX';
 }
 
 bool _hasDisplayQuote(_Instrument instrument) {

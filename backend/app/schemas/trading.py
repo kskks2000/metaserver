@@ -675,6 +675,63 @@ class DomesticStockOrderResponse(BaseModel):
     raw_output: dict[str, Any] = Field(default_factory=dict)
 
 
+class DomesticStockOrderCancelRequest(BaseModel):
+    environment: BrokerEnvironment | None = None
+    order_id: str = Field(min_length=1, max_length=20)
+    branch_no: str = Field(min_length=1, max_length=10)
+    order_division_code: str = Field(default="00", min_length=2, max_length=4)
+    quantity: int | None = Field(default=None, gt=0)
+    use_remaining_quantity: bool = True
+    exchange_code: str = Field(default="KRX", min_length=2, max_length=10)
+    dry_run: bool = False
+
+    @model_validator(mode="after")
+    def validate_cancel_quantity(self):
+        if not self.use_remaining_quantity and self.quantity is None:
+            raise ValueError("Cancel quantity is required when not using remaining quantity.")
+        return self
+
+
+class DomesticStockOrderAmendRequest(BaseModel):
+    environment: BrokerEnvironment | None = None
+    order_id: str = Field(min_length=1, max_length=20)
+    branch_no: str = Field(min_length=1, max_length=10)
+    order_division_code: str = Field(default="00", min_length=2, max_length=4)
+    quantity: int | None = Field(default=None, gt=0)
+    use_remaining_quantity: bool = True
+    exchange_code: str = Field(default="KRX", min_length=2, max_length=10)
+    price: Decimal = Field(gt=0)
+    condition_price: Decimal | None = Field(default=None, ge=0)
+    dry_run: bool = False
+
+    @model_validator(mode="after")
+    def validate_amend_quantity(self):
+        if not self.use_remaining_quantity and self.quantity is None:
+            raise ValueError("Amended quantity is required when not using remaining quantity.")
+        return self
+
+
+class DomesticStockOrderActionResponse(BaseModel):
+    environment: BrokerEnvironment
+    action: str
+    order_id: str
+    branch_no: str
+    order_division_code: str
+    quantity: int
+    use_remaining_quantity: bool
+    exchange_code: str
+    price: Decimal
+    tr_id: str
+    dry_run: bool = False
+    broker_order_no: str | None = None
+    new_broker_order_no: str | None = None
+    broker_order_time: str | None = None
+    kis_message_code: str | None = None
+    kis_message: str | None = None
+    request_payload: dict[str, Any] = Field(default_factory=dict)
+    raw_output: dict[str, Any] = Field(default_factory=dict)
+
+
 class OverseasStockOrderResponse(BaseModel):
     environment: BrokerEnvironment
     side: OrderSide
@@ -706,6 +763,8 @@ class KisOrderActivityItem(BaseModel):
     order_no: str | None = None
     branch_no: str | None = None
     original_order_no: str | None = None
+    order_division_code: str | None = None
+    exchange_code: str | None = None
     symbol: str
     name: str
     side: OrderSide

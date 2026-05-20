@@ -4,7 +4,13 @@ import unittest
 from datetime import datetime
 
 from app.core.config import Settings
-from app.schemas.trading import DomesticStockOrderRequest, OrderKind, OrderSide
+from app.schemas.trading import (
+    DomesticStockOrderAmendRequest,
+    DomesticStockOrderCancelRequest,
+    DomesticStockOrderRequest,
+    OrderKind,
+    OrderSide,
+)
 from app.services.kis import KisClient, KisOrderValidationError
 
 
@@ -109,6 +115,93 @@ class KisDomesticOrderRoutingTest(unittest.TestCase):
 
         self.assertEqual(self.client._order_price(order, "05"), 0)
         self.assertEqual(self.client._order_price(order, "06"), 0)
+
+    def test_modern_domestic_cancel_uses_order_rvsecncl_payload(self) -> None:
+        client = KisClient(
+            Settings(
+                kis_default_environment="paper",
+                kis_paper_app_key="app",
+                kis_paper_app_secret="secret",
+                kis_paper_account_no="12345678",
+                kis_paper_account_product_code="01",
+            )
+        )
+        self.addCleanup(client._client.close)
+
+        response = client.cancel_domestic_stock_order(
+            DomesticStockOrderCancelRequest(
+                order_id="0000002101",
+                branch_no="06010",
+                order_division_code="00",
+                exchange_code="KRX",
+                dry_run=True,
+            )
+        )
+
+        self.assertEqual(response.tr_id, "VTTC0013U")
+        self.assertEqual(response.request_payload["KRX_FWDG_ORD_ORGNO"], "06010")
+        self.assertEqual(response.request_payload["ORGN_ODNO"], "0000002101")
+        self.assertEqual(response.request_payload["RVSE_CNCL_DVSN_CD"], "02")
+        self.assertEqual(response.request_payload["ORD_QTY"], "0")
+        self.assertEqual(response.request_payload["ORD_UNPR"], "0")
+        self.assertEqual(response.request_payload["QTY_ALL_ORD_YN"], "Y")
+        self.assertEqual(response.request_payload["EXCG_ID_DVSN_CD"], "KRX")
+
+    def test_modern_domestic_amend_uses_price_and_partial_quantity(self) -> None:
+        client = KisClient(
+            Settings(
+                kis_default_environment="paper",
+                kis_paper_app_key="app",
+                kis_paper_app_secret="secret",
+                kis_paper_account_no="12345678",
+                kis_paper_account_product_code="01",
+            )
+        )
+        self.addCleanup(client._client.close)
+
+        response = client.amend_domestic_stock_order(
+            DomesticStockOrderAmendRequest(
+                order_id="0000002101",
+                branch_no="06010",
+                order_division_code="00",
+                exchange_code="NXT",
+                price=55000,
+                quantity=1,
+                use_remaining_quantity=False,
+                dry_run=True,
+            )
+        )
+
+        self.assertEqual(response.tr_id, "VTTC0013U")
+        self.assertEqual(response.request_payload["RVSE_CNCL_DVSN_CD"], "01")
+        self.assertEqual(response.request_payload["ORD_QTY"], "1")
+        self.assertEqual(response.request_payload["ORD_UNPR"], "55000")
+        self.assertEqual(response.request_payload["QTY_ALL_ORD_YN"], "N")
+        self.assertEqual(response.request_payload["EXCG_ID_DVSN_CD"], "NXT")
+
+    def test_legacy_domestic_cancel_uses_legacy_tr_id(self) -> None:
+        client = KisClient(
+            Settings(
+                kis_default_environment="paper",
+                kis_paper_app_key="app",
+                kis_paper_app_secret="secret",
+                kis_paper_account_no="12345678",
+                kis_paper_account_product_code="01",
+                kis_order_protocol="legacy",
+            )
+        )
+        self.addCleanup(client._client.close)
+
+        response = client.cancel_domestic_stock_order(
+            DomesticStockOrderCancelRequest(
+                order_id="0000002101",
+                branch_no="06010",
+                dry_run=True,
+            )
+        )
+
+        self.assertEqual(response.tr_id, "VTTC0803U")
+        self.assertNotIn("EXCG_ID_DVSN_CD", response.request_payload)
 
 
 if __name__ == "__main__":

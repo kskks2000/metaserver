@@ -130,6 +130,26 @@ class TradingRepository {
     return DomesticStockOrderResult.fromJson(data);
   }
 
+  Future<DomesticStockOrderActionResult> cancelDomesticStockOrder(
+    DomesticStockOrderCancelDraft draft,
+  ) async {
+    final data = await _apiClient.postJson(
+      '/trading/domestic-stocks/orders/cancel',
+      data: draft.toJson(),
+    );
+    return DomesticStockOrderActionResult.fromJson(data);
+  }
+
+  Future<DomesticStockOrderActionResult> amendDomesticStockOrder(
+    DomesticStockOrderAmendDraft draft,
+  ) async {
+    final data = await _apiClient.postJson(
+      '/trading/domestic-stocks/orders/amend',
+      data: draft.toJson(),
+    );
+    return DomesticStockOrderActionResult.fromJson(data);
+  }
+
   Future<DomesticStockOrderResult> placeOverseasOrder(
     OverseasStockOrderDraft draft,
   ) async {
@@ -545,6 +565,10 @@ class KisOrderActivityItem {
     this.orderDate,
     this.orderTime,
     this.orderNo,
+    this.branchNo,
+    this.originalOrderNo,
+    this.orderDivisionCode,
+    this.exchangeCode,
     this.orderKindName,
   });
 
@@ -564,11 +588,18 @@ class KisOrderActivityItem {
   final String? orderDate;
   final String? orderTime;
   final String? orderNo;
+  final String? branchNo;
+  final String? originalOrderNo;
+  final String? orderDivisionCode;
+  final String? exchangeCode;
   final String? orderKindName;
 
   bool get isBuy => side == 'buy';
   bool get isCrypto =>
       assetClass == 'crypto' || broker.toUpperCase() == 'UPBIT';
+  bool get isDomesticStock =>
+      assetClass == 'domestic_stock' && broker.toUpperCase() == 'KIS';
+  bool get supportsOrderActions => isCrypto || isDomesticStock;
 
   Map<String, Object?> toJson() {
     return {
@@ -588,6 +619,10 @@ class KisOrderActivityItem {
       'order_date': orderDate,
       'order_time': orderTime,
       'order_no': orderNo,
+      'branch_no': branchNo,
+      'original_order_no': originalOrderNo,
+      'order_division_code': orderDivisionCode,
+      'exchange_code': exchangeCode,
       'order_kind_name': orderKindName,
     };
   }
@@ -610,6 +645,10 @@ class KisOrderActivityItem {
       orderDate: json['order_date']?.toString(),
       orderTime: json['order_time']?.toString(),
       orderNo: json['order_no']?.toString(),
+      branchNo: json['branch_no']?.toString(),
+      originalOrderNo: json['original_order_no']?.toString(),
+      orderDivisionCode: json['order_division_code']?.toString(),
+      exchangeCode: json['exchange_code']?.toString(),
       orderKindName: json['order_kind_name']?.toString(),
     );
   }
@@ -738,6 +777,67 @@ class DomesticStockOrderDraft {
   }
 }
 
+class DomesticStockOrderCancelDraft {
+  const DomesticStockOrderCancelDraft({
+    required this.orderId,
+    required this.branchNo,
+    required this.orderDivisionCode,
+    required this.exchangeCode,
+    this.quantity,
+    this.useRemainingQuantity = true,
+  });
+
+  final String orderId;
+  final String branchNo;
+  final String orderDivisionCode;
+  final String exchangeCode;
+  final int? quantity;
+  final bool useRemainingQuantity;
+
+  Map<String, dynamic> toJson() {
+    return {
+      'order_id': orderId,
+      'branch_no': branchNo,
+      'order_division_code': orderDivisionCode,
+      'exchange_code': exchangeCode,
+      'use_remaining_quantity': useRemainingQuantity,
+      if (!useRemainingQuantity && quantity != null) 'quantity': quantity,
+    };
+  }
+}
+
+class DomesticStockOrderAmendDraft {
+  const DomesticStockOrderAmendDraft({
+    required this.orderId,
+    required this.branchNo,
+    required this.orderDivisionCode,
+    required this.exchangeCode,
+    required this.price,
+    this.quantity,
+    this.useRemainingQuantity = true,
+  });
+
+  final String orderId;
+  final String branchNo;
+  final String orderDivisionCode;
+  final String exchangeCode;
+  final int price;
+  final int? quantity;
+  final bool useRemainingQuantity;
+
+  Map<String, dynamic> toJson() {
+    return {
+      'order_id': orderId,
+      'branch_no': branchNo,
+      'order_division_code': orderDivisionCode,
+      'exchange_code': exchangeCode,
+      'price': price,
+      'use_remaining_quantity': useRemainingQuantity,
+      if (!useRemainingQuantity && quantity != null) 'quantity': quantity,
+    };
+  }
+}
+
 class OverseasStockOrderDraft {
   const OverseasStockOrderDraft({
     required this.side,
@@ -839,6 +939,35 @@ class UpbitOrderActionResult {
       brokerOrderNo: json['broker_order_no']?.toString(),
       newBrokerOrderNo: json['new_broker_order_no']?.toString(),
       brokerState: json['broker_state']?.toString(),
+    );
+  }
+}
+
+class DomesticStockOrderActionResult {
+  const DomesticStockOrderActionResult({
+    required this.action,
+    required this.orderId,
+    this.brokerOrderNo,
+    this.newBrokerOrderNo,
+    this.brokerOrderTime,
+    this.kisMessage,
+  });
+
+  final String action;
+  final String orderId;
+  final String? brokerOrderNo;
+  final String? newBrokerOrderNo;
+  final String? brokerOrderTime;
+  final String? kisMessage;
+
+  factory DomesticStockOrderActionResult.fromJson(Map<String, dynamic> json) {
+    return DomesticStockOrderActionResult(
+      action: json['action']?.toString() ?? '',
+      orderId: json['order_id']?.toString() ?? '',
+      brokerOrderNo: json['broker_order_no']?.toString(),
+      newBrokerOrderNo: json['new_broker_order_no']?.toString(),
+      brokerOrderTime: json['broker_order_time']?.toString(),
+      kisMessage: json['kis_message']?.toString(),
     );
   }
 }
