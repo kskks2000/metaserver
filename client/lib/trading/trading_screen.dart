@@ -488,8 +488,7 @@ class _TradingScreenState extends ConsumerState<TradingScreen> {
     final instrumentsSnapshot = List<_Instrument>.of(_visibleInstruments)
         .where((instrument) => instrument.assetClass.supportsKisQuote)
         .toList();
-    final refreshedInstruments = List<_Instrument>.of(_instruments);
-    var refreshedSelectedInstrument = _selectedInstrument;
+    final refreshedByAssetKey = <String, _Instrument>{};
     try {
       if (_visibleInstruments.isEmpty) {
         if (showMessage) {
@@ -516,15 +515,7 @@ class _TradingScreenState extends ConsumerState<TradingScreen> {
           if (!mounted) return;
           final updated = _mergeQuote(instrument, quote);
           refreshedCount += 1;
-          final fullIndex = refreshedInstruments.indexWhere(
-            (item) => item.assetKey == updated.assetKey,
-          );
-          if (fullIndex >= 0) {
-            refreshedInstruments[fullIndex] = updated;
-          }
-          if (refreshedSelectedInstrument.assetKey == updated.assetKey) {
-            refreshedSelectedInstrument = updated;
-          }
+          refreshedByAssetKey[updated.assetKey] = updated;
         } catch (_) {
           // Keep showing the last known value for this symbol and continue.
         }
@@ -538,8 +529,13 @@ class _TradingScreenState extends ConsumerState<TradingScreen> {
       }
       if (_selectedGroupId == refreshingGroupId) {
         setState(() {
-          _replaceSelectedGroupInstruments(refreshedInstruments);
-          _selectedInstrument = refreshedSelectedInstrument;
+          _replaceSelectedGroupInstruments([
+            for (final instrument in _instruments)
+              refreshedByAssetKey[instrument.assetKey] ?? instrument,
+          ]);
+          _selectedInstrument =
+              refreshedByAssetKey[_selectedInstrument.assetKey] ??
+                  _selectedInstrument;
         });
         _saveWatchlistGroups();
       }
@@ -1960,8 +1956,10 @@ class _OrderTicketTabState extends ConsumerState<_OrderTicketTab> {
   bool _riskNoticeLoading = true;
   String? _riskNoticeError;
   String? _upbitMarketForFutures;
+  String? _kisOrderbookKey;
   Future<UpbitOrderChance>? _upbitOrderChanceFuture;
   Future<UpbitOrderbook>? _upbitOrderbookFuture;
+  Future<KisOrderbook>? _kisOrderbookFuture;
 
   @override
   void initState() {
@@ -1971,7 +1969,7 @@ class _OrderTicketTabState extends ConsumerState<_OrderTicketTab> {
     _priceController = TextEditingController(
       text: _orderPriceText(widget.instrument),
     );
-    _syncUpbitFutures();
+    _syncMarketFutures();
     unawaited(_loadRiskNoticeConsent());
   }
 
@@ -1995,7 +1993,7 @@ class _OrderTicketTabState extends ConsumerState<_OrderTicketTab> {
     if (oldWidget.initialSide != widget.initialSide) {
       _side = widget.initialSide;
     }
-    _syncUpbitFutures();
+    _syncMarketFutures();
   }
 
   @override
@@ -2005,14 +2003,61 @@ class _OrderTicketTabState extends ConsumerState<_OrderTicketTab> {
     super.dispose();
   }
 
-  void _syncUpbitFutures() {
-    if (widget.instrument.assetClass != _AssetClass.crypto) return;
-    final market = widget.instrument.symbol;
-    if (_upbitMarketForFutures == market) return;
+  void _syncMarketFutures() {
     final repository = ref.read(tradingRepositoryProvider);
-    _upbitMarketForFutures = market;
-    _upbitOrderChanceFuture = repository.loadUpbitOrderChance(market);
-    _upbitOrderbookFuture = repository.loadUpbitOrderbook(market);
+    if (widget.instrument.assetClass == _AssetClass.crypto) {
+      final market = widget.instrument.symbol;
+      if (_upbitMarketForFutures == market) return;
+      _upbitMarketForFutures = market;
+      _kisOrderbookKey = null;
+      _kisOrderbookFuture = null;
+      _upbitOrderChanceFuture = repository.loadUpbitOrderChance(market);
+      _upbitOrderbookFuture = repository.loadUpbitOrderbook(market);
+      return;
+    }
+
+    _upbitMarketForFutures = null;
+    _upbitOrderChanceFuture = null;
+    _upbitOrderbookFuture = null;
+    final key =
+        '${widget.instrument.assetClass.storageValue}:${widget.instrument.market}:${widget.instrument.symbol}';
+    if (_kisOrderbookKey == key) return;
+    _kisOrderbookKey = key;
+    _kisOrderbookFuture =
+        widget.instrument.assetClass == _AssetClass.domesticStock
+            ? repository.loadDomesticOrderbook(widget.instrument.symbol)
+            : repository.loadOverseasOrderbook(
+                widget.instrument.symbol,
+                marketCode: widget.instrument.market,
+              );
+  }
+
+  void _refreshOrderbook() {
+    setState(() {
+      _upbitMarketForFutures = null;
+      _kisOrderbookKey = null;
+      _syncMarketFutures();
+    });
+  }
+
+  void _selectOrderbookPrice({
+    required num price,
+    required _TradeSide side,
+  }) {
+    if (price <= 0) return;
+    setState(() {
+      _marketOrder = false;
+      _side = side;
+      _setPriceText(_formatOrderbookPriceInput(price));
+    });
+    widget.onSideChanged(side);
+  }
+
+  String _formatOrderbookPriceInput(num price) {
+    if (widget.instrument.assetClass.usesDecimalPrice) {
+      return formatDecimalInputText(price, maxDecimalPlaces: 8);
+    }
+    return formatIntegerInputText(price.round());
   }
 
   @override
@@ -2223,6 +2268,17 @@ class _OrderTicketTabState extends ConsumerState<_OrderTicketTab> {
                 ),
               );
 
+              final orderbook = _KisOrderbookTradePanel(
+                instrument: widget.instrument,
+                future: _kisOrderbookFuture,
+                selectedPrice: _marketOrder ? null : price,
+                onRefresh: _refreshOrderbook,
+                onPriceSelected: (level, side) => _selectOrderbookPrice(
+                  price: level.price,
+                  side: side,
+                ),
+              );
+
               final guide = _Panel(
                 title: '주문 전 점검',
                 icon: Icons.verified_user_outlined,
@@ -2258,18 +2314,31 @@ class _OrderTicketTabState extends ConsumerState<_OrderTicketTab> {
               );
 
               if (constraints.maxWidth >= 900) {
-                return Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+                return Column(
                   children: [
-                    Expanded(flex: 6, child: ticket),
-                    const SizedBox(width: 16),
-                    Expanded(flex: 4, child: guide),
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Expanded(flex: 6, child: orderbook),
+                        const SizedBox(width: 16),
+                        Expanded(flex: 5, child: ticket),
+                      ],
+                    ),
+                    const SizedBox(height: 16),
+                    guide,
                   ],
                 );
               }
 
               return Column(
-                  children: [ticket, const SizedBox(height: 16), guide]);
+                children: [
+                  orderbook,
+                  const SizedBox(height: 16),
+                  ticket,
+                  const SizedBox(height: 16),
+                  guide,
+                ],
+              );
             },
           ),
         );
@@ -2453,6 +2522,17 @@ class _OrderTicketTabState extends ConsumerState<_OrderTicketTab> {
                 ),
               );
 
+              final orderbook = _UpbitOrderbookPanel(
+                instrument: widget.instrument,
+                future: _upbitOrderbookFuture,
+                selectedPrice: _marketOrder ? null : price,
+                onRefresh: _refreshOrderbook,
+                onPriceSelected: (price, side) => _selectOrderbookPrice(
+                  price: price,
+                  side: side,
+                ),
+              );
+
               final guide = Column(
                 children: [
                   _Panel(
@@ -2482,24 +2562,34 @@ class _OrderTicketTabState extends ConsumerState<_OrderTicketTab> {
                   ),
                   const SizedBox(height: 16),
                   _UpbitChancePanel(future: _upbitOrderChanceFuture),
-                  const SizedBox(height: 16),
-                  _UpbitOrderbookPanel(future: _upbitOrderbookFuture),
                 ],
               );
 
               if (constraints.maxWidth >= 980) {
-                return Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+                return Column(
                   children: [
-                    Expanded(flex: 6, child: ticket),
-                    const SizedBox(width: 16),
-                    Expanded(flex: 4, child: guide),
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Expanded(flex: 6, child: orderbook),
+                        const SizedBox(width: 16),
+                        Expanded(flex: 5, child: ticket),
+                      ],
+                    ),
+                    const SizedBox(height: 16),
+                    guide,
                   ],
                 );
               }
 
               return Column(
-                children: [ticket, const SizedBox(height: 16), guide],
+                children: [
+                  orderbook,
+                  const SizedBox(height: 16),
+                  ticket,
+                  const SizedBox(height: 16),
+                  guide,
+                ],
               );
             },
           ),
@@ -4365,17 +4455,123 @@ class _UpbitChancePanel extends StatelessWidget {
   }
 }
 
-class _UpbitOrderbookPanel extends StatelessWidget {
-  const _UpbitOrderbookPanel({required this.future});
+class _KisOrderbookTradePanel extends StatelessWidget {
+  const _KisOrderbookTradePanel({
+    required this.instrument,
+    required this.future,
+    required this.selectedPrice,
+    required this.onRefresh,
+    required this.onPriceSelected,
+  });
 
-  final Future<UpbitOrderbook>? future;
+  final _Instrument instrument;
+  final Future<KisOrderbook>? future;
+  final num? selectedPrice;
+  final VoidCallback onRefresh;
+  final void Function(OrderbookLevel level, _TradeSide side) onPriceSelected;
 
   @override
   Widget build(BuildContext context) {
     final orderbookFuture = future;
-    return _Panel(
-      title: '호가',
-      icon: Icons.format_list_numbered_rounded,
+    return _OrderbookPanelShell(
+      title: '호가 주문',
+      subtitle: '${instrument.name} · ${instrument.symbol}',
+      onRefresh: onRefresh,
+      child: orderbookFuture == null
+          ? const _PanelStateMessage(
+              icon: Icons.info_outline_rounded,
+              message: '호가를 조회할 종목을 선택해 주세요.',
+            )
+          : FutureBuilder<KisOrderbook>(
+              future: orderbookFuture,
+              builder: (context, snapshot) {
+                if (snapshot.connectionState == ConnectionState.waiting &&
+                    !snapshot.hasData) {
+                  return const _PanelStateMessage(
+                    icon: Icons.sync_rounded,
+                    message: '호가를 조회 중입니다.',
+                  );
+                }
+                if (snapshot.hasError && !snapshot.hasData) {
+                  return _PanelStateMessage(
+                    icon: Icons.error_outline_rounded,
+                    message:
+                        apiFailureMessage(snapshot.error!) ?? '호가 조회에 실패했습니다.',
+                    danger: true,
+                  );
+                }
+                final orderbook = snapshot.data;
+                if (orderbook == null ||
+                    (orderbook.asks.isEmpty && orderbook.bids.isEmpty)) {
+                  return const _PanelStateMessage(
+                    icon: Icons.info_outline_rounded,
+                    message: '표시할 호가가 없습니다.',
+                  );
+                }
+                return _OrderbookDepthView(
+                  instrument: instrument,
+                  asks: [
+                    for (final level in orderbook.asks)
+                      _BookLevel(
+                        depth: level.depth,
+                        price: level.price,
+                        size: level.size,
+                        change: level.change,
+                      ),
+                  ],
+                  bids: [
+                    for (final level in orderbook.bids)
+                      _BookLevel(
+                        depth: level.depth,
+                        price: level.price,
+                        size: level.size,
+                        change: level.change,
+                      ),
+                  ],
+                  currentPrice: orderbook.currentPrice,
+                  expectedPrice: orderbook.expectedPrice,
+                  totalAskSize: orderbook.totalAskSize,
+                  totalBidSize: orderbook.totalBidSize,
+                  quoteTime: _formatOrderTime(orderbook.quoteTime),
+                  selectedPrice: selectedPrice,
+                  onPriceSelected: (level, side) => onPriceSelected(
+                    OrderbookLevel(
+                      depth: level.depth,
+                      price: level.price.toDouble(),
+                      size: level.size.toDouble(),
+                      change: level.change?.toDouble(),
+                    ),
+                    side,
+                  ),
+                );
+              },
+            ),
+    );
+  }
+}
+
+class _UpbitOrderbookPanel extends StatelessWidget {
+  const _UpbitOrderbookPanel({
+    required this.instrument,
+    required this.future,
+    required this.selectedPrice,
+    required this.onRefresh,
+    required this.onPriceSelected,
+  });
+
+  final _Instrument instrument;
+  final Future<UpbitOrderbook>? future;
+  final num? selectedPrice;
+  final VoidCallback onRefresh;
+  final void Function(num price, _TradeSide side) onPriceSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    final orderbookFuture = future;
+    return _OrderbookPanelShell(
+      title: '호가 주문',
+      subtitle: '${instrument.name} · ${instrument.symbol}',
+      onRefresh: onRefresh,
       child: orderbookFuture == null
           ? const _PanelStateMessage(
               icon: Icons.info_outline_rounded,
@@ -4399,63 +4595,989 @@ class _UpbitOrderbookPanel extends StatelessWidget {
                     danger: true,
                   );
                 }
-                final units = snapshot.data?.units ?? const [];
+                final orderbook = snapshot.data;
+                final units = orderbook?.units ?? const <UpbitOrderbookUnit>[];
                 if (units.isEmpty) {
                   return const _PanelStateMessage(
                     icon: Icons.info_outline_rounded,
                     message: '표시할 호가가 없습니다.',
                   );
                 }
-                return Column(
-                  children: [
-                    for (final unit in units.take(6))
-                      Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 4),
-                        child: Row(
-                          children: [
-                            Expanded(
-                              child: Text(
-                                _won(unit.bidPrice),
-                                style: const TextStyle(
-                                  color: MetaServerColors.fall,
-                                  fontWeight: FontWeight.w900,
-                                ),
-                              ),
-                            ),
-                            Text(
-                              _formatQuantity(unit.bidSize),
-                              style: TextStyle(
-                                color: MetaServerColors.ink
-                                    .withValues(alpha: 0.52),
-                                fontWeight: FontWeight.w700,
-                              ),
-                            ),
-                            const SizedBox(width: 12),
-                            Text(
-                              _formatQuantity(unit.askSize),
-                              style: TextStyle(
-                                color: MetaServerColors.ink
-                                    .withValues(alpha: 0.52),
-                                fontWeight: FontWeight.w700,
-                              ),
-                            ),
-                            Expanded(
-                              child: Text(
-                                _won(unit.askPrice),
-                                textAlign: TextAlign.right,
-                                style: const TextStyle(
-                                  color: MetaServerColors.rise,
-                                  fontWeight: FontWeight.w900,
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
+                return _OrderbookDepthView(
+                  instrument: instrument,
+                  asks: [
+                    for (var i = 0; i < units.length; i++)
+                      _BookLevel(
+                        depth: i + 1,
+                        price: units[i].askPrice,
+                        size: units[i].askSize,
                       ),
                   ],
+                  bids: [
+                    for (var i = 0; i < units.length; i++)
+                      _BookLevel(
+                        depth: i + 1,
+                        price: units[i].bidPrice,
+                        size: units[i].bidSize,
+                      ),
+                  ],
+                  currentPrice: null,
+                  totalAskSize: orderbook?.totalAskSize,
+                  totalBidSize: orderbook?.totalBidSize,
+                  selectedPrice: selectedPrice,
+                  onPriceSelected: (level, side) =>
+                      onPriceSelected(level.price, side),
                 );
               },
             ),
+    );
+  }
+}
+
+class _OrderbookPanelShell extends StatelessWidget {
+  const _OrderbookPanelShell({
+    required this.title,
+    required this.subtitle,
+    required this.onRefresh,
+    required this.child,
+  });
+
+  final String title;
+  final String subtitle;
+  final VoidCallback onRefresh;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: MetaServerColors.line),
+        boxShadow: [
+          BoxShadow(
+            color: MetaServerColors.ink.withValues(alpha: 0.055),
+            blurRadius: 18,
+            offset: const Offset(0, 10),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 34,
+                height: 34,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  color: MetaServerColors.ink,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: const Icon(
+                  Icons.format_list_numbered_rounded,
+                  color: MetaServerColors.mint,
+                  size: 19,
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      title,
+                      style: const TextStyle(
+                        color: MetaServerColors.ink,
+                        fontSize: 16,
+                        fontWeight: FontWeight.w900,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      subtitle,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: MetaServerColors.ink.withValues(alpha: 0.54),
+                        fontSize: 12,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              IconButton.outlined(
+                tooltip: '새로고침',
+                onPressed: onRefresh,
+                icon: const Icon(Icons.refresh_rounded, size: 19),
+                style: IconButton.styleFrom(
+                  fixedSize: const Size(38, 38),
+                  foregroundColor: MetaServerColors.ink,
+                  side: const BorderSide(color: MetaServerColors.line),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          child,
+        ],
+      ),
+    );
+  }
+}
+
+class _BookLevel {
+  const _BookLevel({
+    required this.depth,
+    required this.price,
+    required this.size,
+    this.change,
+  });
+
+  final int depth;
+  final num price;
+  final num size;
+  final num? change;
+}
+
+class _OrderbookDepthView extends StatelessWidget {
+  const _OrderbookDepthView({
+    required this.instrument,
+    required this.asks,
+    required this.bids,
+    required this.selectedPrice,
+    required this.onPriceSelected,
+    this.currentPrice,
+    this.expectedPrice,
+    this.totalAskSize,
+    this.totalBidSize,
+    this.quoteTime,
+  });
+
+  final _Instrument instrument;
+  final List<_BookLevel> asks;
+  final List<_BookLevel> bids;
+  final num? currentPrice;
+  final num? expectedPrice;
+  final num? totalAskSize;
+  final num? totalBidSize;
+  final String? quoteTime;
+  final num? selectedPrice;
+  final void Function(_BookLevel level, _TradeSide side) onPriceSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    final displayAsks = asks.take(10).toList().reversed.toList();
+    final displayBids = bids.take(10).toList();
+    final quickAsks = asks.take(6).toList();
+    final quickBids = bids.take(6).toList();
+    final maxSize = [
+      ...displayAsks.map((level) => level.size),
+      ...displayBids.map((level) => level.size),
+    ].fold<num>(0, (max, value) => value > max ? value : max);
+    final bestAsk = asks.isEmpty ? null : asks.first.price;
+    final bestBid = bids.isEmpty ? null : bids.first.price;
+    final spread =
+        bestAsk != null && bestBid != null ? bestAsk - bestBid : null;
+    final headerPrice = expectedPrice != null && expectedPrice! > 0
+        ? expectedPrice
+        : currentPrice;
+
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final compact = constraints.maxWidth < 560;
+        final depthPanel = compact
+            ? _OrderbookMobileDepthPanel(
+                instrument: instrument,
+                asks: quickAsks,
+                bids: quickBids,
+                maxSize: maxSize,
+                spread: spread,
+                selectedPrice: selectedPrice,
+                onPriceSelected: onPriceSelected,
+              )
+            : Container(
+                decoration: BoxDecoration(
+                  color: const Color(0xFFFBFEFC),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: MetaServerColors.line),
+                ),
+                clipBehavior: Clip.antiAlias,
+                child: Column(
+                  children: [
+                    const _OrderbookTableHeader(),
+                    for (final level in displayAsks)
+                      _OrderbookLevelRow(
+                        instrument: instrument,
+                        level: level,
+                        side: _TradeSide.buy,
+                        maxSize: maxSize,
+                        selected: _samePrice(selectedPrice, level.price),
+                        onTap: () => onPriceSelected(level, _TradeSide.buy),
+                      ),
+                    _OrderbookMidline(spread: spread, instrument: instrument),
+                    for (final level in displayBids)
+                      _OrderbookLevelRow(
+                        instrument: instrument,
+                        level: level,
+                        side: _TradeSide.sell,
+                        maxSize: maxSize,
+                        selected: _samePrice(selectedPrice, level.price),
+                        onTap: () => onPriceSelected(level, _TradeSide.sell),
+                      ),
+                  ],
+                ),
+              );
+
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            _OrderbookSummaryStrip(
+              instrument: instrument,
+              price: headerPrice,
+              spread: spread,
+              totalAskSize: totalAskSize,
+              totalBidSize: totalBidSize,
+              quoteTime: quoteTime,
+            ),
+            const SizedBox(height: 10),
+            depthPanel,
+          ],
+        );
+      },
+    );
+  }
+}
+
+class _OrderbookMobileDepthPanel extends StatelessWidget {
+  const _OrderbookMobileDepthPanel({
+    required this.instrument,
+    required this.asks,
+    required this.bids,
+    required this.maxSize,
+    required this.spread,
+    required this.selectedPrice,
+    required this.onPriceSelected,
+  });
+
+  final _Instrument instrument;
+  final List<_BookLevel> asks;
+  final List<_BookLevel> bids;
+  final num maxSize;
+  final num? spread;
+  final num? selectedPrice;
+  final void Function(_BookLevel level, _TradeSide side) onPriceSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    final bestAsk = asks.isEmpty ? null : asks.first;
+    final bestBid = bids.isEmpty ? null : bids.first;
+    final rowCount = math.max(asks.length, bids.length);
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: _BestQuoteButton(
+                instrument: instrument,
+                label: '즉시 매수',
+                supportingLabel: '매도 1호가',
+                level: bestAsk,
+                side: _TradeSide.buy,
+                selected:
+                    bestAsk != null && _samePrice(selectedPrice, bestAsk.price),
+                onTap: bestAsk == null
+                    ? null
+                    : () => onPriceSelected(bestAsk, _TradeSide.buy),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: _BestQuoteButton(
+                instrument: instrument,
+                label: '즉시 매도',
+                supportingLabel: '매수 1호가',
+                level: bestBid,
+                side: _TradeSide.sell,
+                selected:
+                    bestBid != null && _samePrice(selectedPrice, bestBid.price),
+                onTap: bestBid == null
+                    ? null
+                    : () => onPriceSelected(bestBid, _TradeSide.sell),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 10),
+        Container(
+          decoration: BoxDecoration(
+            color: const Color(0xFFFBFEFC),
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: MetaServerColors.line),
+          ),
+          clipBehavior: Clip.antiAlias,
+          child: Column(
+            children: [
+              const _OrderbookMobileHeader(),
+              for (var index = 0; index < rowCount; index++)
+                _OrderbookMobilePairRow(
+                  instrument: instrument,
+                  ask: index < asks.length ? asks[index] : null,
+                  bid: index < bids.length ? bids[index] : null,
+                  maxSize: maxSize,
+                  selectedPrice: selectedPrice,
+                  onPriceSelected: onPriceSelected,
+                ),
+              _OrderbookMidline(spread: spread, instrument: instrument),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _BestQuoteButton extends StatelessWidget {
+  const _BestQuoteButton({
+    required this.instrument,
+    required this.label,
+    required this.supportingLabel,
+    required this.level,
+    required this.side,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final _Instrument instrument;
+  final String label;
+  final String supportingLabel;
+  final _BookLevel? level;
+  final _TradeSide side;
+  final bool selected;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final isBuy = side == _TradeSide.buy;
+    final color = isBuy ? MetaServerColors.buy : MetaServerColors.sell;
+    final disabled = level == null;
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(8),
+        child: Ink(
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: disabled
+                ? MetaServerColors.canvas
+                : color.withValues(alpha: selected ? 0.15 : 0.08),
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(
+              color: disabled
+                  ? MetaServerColors.line
+                  : color.withValues(alpha: selected ? 0.52 : 0.2),
+            ),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Icon(
+                    isBuy
+                        ? Icons.shopping_cart_checkout_rounded
+                        : Icons.sell_outlined,
+                    size: 16,
+                    color: disabled
+                        ? MetaServerColors.ink.withValues(alpha: 0.38)
+                        : color,
+                  ),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      label,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: disabled
+                            ? MetaServerColors.ink.withValues(alpha: 0.42)
+                            : color,
+                        fontSize: 13,
+                        fontWeight: FontWeight.w900,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              Text(
+                disabled ? '--' : _orderbookPrice(instrument, level!.price),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  color: disabled
+                      ? MetaServerColors.ink.withValues(alpha: 0.42)
+                      : MetaServerColors.ink,
+                  fontSize: 16,
+                  fontWeight: FontWeight.w900,
+                ),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                disabled
+                    ? supportingLabel
+                    : '$supportingLabel · ${_compactQuantity(level!.size)}',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  color: MetaServerColors.ink.withValues(alpha: 0.54),
+                  fontSize: 11,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _OrderbookMobileHeader extends StatelessWidget {
+  const _OrderbookMobileHeader();
+
+  @override
+  Widget build(BuildContext context) {
+    final style = TextStyle(
+      color: MetaServerColors.ink.withValues(alpha: 0.52),
+      fontSize: 11,
+      fontWeight: FontWeight.w900,
+    );
+    return Container(
+      height: 30,
+      padding: const EdgeInsets.symmetric(horizontal: 10),
+      decoration: BoxDecoration(
+        color: MetaServerColors.canvas.withValues(alpha: 0.78),
+        border: Border(
+          bottom:
+              BorderSide(color: MetaServerColors.line.withValues(alpha: 0.8)),
+        ),
+      ),
+      child: Row(
+        children: [
+          Expanded(child: Text('매도호가', style: style)),
+          SizedBox(
+            width: 38,
+            child: Text('단계', textAlign: TextAlign.center, style: style),
+          ),
+          Expanded(
+            child: Text('매수호가', textAlign: TextAlign.right, style: style),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _OrderbookMobilePairRow extends StatelessWidget {
+  const _OrderbookMobilePairRow({
+    required this.instrument,
+    required this.ask,
+    required this.bid,
+    required this.maxSize,
+    required this.selectedPrice,
+    required this.onPriceSelected,
+  });
+
+  final _Instrument instrument;
+  final _BookLevel? ask;
+  final _BookLevel? bid;
+  final num maxSize;
+  final num? selectedPrice;
+  final void Function(_BookLevel level, _TradeSide side) onPriceSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    final depth = ask?.depth ?? bid?.depth ?? 0;
+    return Container(
+      height: 46,
+      decoration: BoxDecoration(
+        border: Border(
+          bottom:
+              BorderSide(color: MetaServerColors.line.withValues(alpha: 0.52)),
+        ),
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: _OrderbookMobileCell(
+              instrument: instrument,
+              level: ask,
+              side: _TradeSide.buy,
+              maxSize: maxSize,
+              selected: ask != null && _samePrice(selectedPrice, ask!.price),
+              alignEnd: false,
+              onTap: ask == null
+                  ? null
+                  : () => onPriceSelected(ask!, _TradeSide.buy),
+            ),
+          ),
+          Container(
+            width: 38,
+            height: double.infinity,
+            alignment: Alignment.center,
+            color: MetaServerColors.ink.withValues(alpha: 0.025),
+            child: Text(
+              depth == 0 ? '-' : depth.toString(),
+              style: TextStyle(
+                color: MetaServerColors.ink.withValues(alpha: 0.38),
+                fontSize: 11,
+                fontWeight: FontWeight.w900,
+              ),
+            ),
+          ),
+          Expanded(
+            child: _OrderbookMobileCell(
+              instrument: instrument,
+              level: bid,
+              side: _TradeSide.sell,
+              maxSize: maxSize,
+              selected: bid != null && _samePrice(selectedPrice, bid!.price),
+              alignEnd: true,
+              onTap: bid == null
+                  ? null
+                  : () => onPriceSelected(bid!, _TradeSide.sell),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _OrderbookMobileCell extends StatelessWidget {
+  const _OrderbookMobileCell({
+    required this.instrument,
+    required this.level,
+    required this.side,
+    required this.maxSize,
+    required this.selected,
+    required this.alignEnd,
+    required this.onTap,
+  });
+
+  final _Instrument instrument;
+  final _BookLevel? level;
+  final _TradeSide side;
+  final num maxSize;
+  final bool selected;
+  final bool alignEnd;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final isBuyAction = side == _TradeSide.buy;
+    final color = isBuyAction ? MetaServerColors.buy : MetaServerColors.sell;
+    final fraction = level == null || maxSize <= 0
+        ? 0.0
+        : (level!.size / maxSize).clamp(0.06, 1.0).toDouble();
+    return Material(
+      color: selected ? color.withValues(alpha: 0.12) : Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        child: Stack(
+          children: [
+            Align(
+              alignment:
+                  alignEnd ? Alignment.centerRight : Alignment.centerLeft,
+              child: FractionallySizedBox(
+                widthFactor: fraction,
+                heightFactor: 1,
+                child: ColoredBox(
+                  color: color.withValues(alpha: selected ? 0.16 : 0.07),
+                ),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              child: Column(
+                crossAxisAlignment: alignEnd
+                    ? CrossAxisAlignment.end
+                    : CrossAxisAlignment.start,
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Text(
+                    level == null
+                        ? '--'
+                        : _orderbookPrice(instrument, level!.price),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      color: level == null
+                          ? MetaServerColors.ink.withValues(alpha: 0.3)
+                          : color,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w900,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    level == null
+                        ? ''
+                        : '${_compactQuantity(level!.size)} · ${isBuyAction ? '매수' : '매도'}',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      color: MetaServerColors.ink.withValues(alpha: 0.58),
+                      fontSize: 10,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _OrderbookTableHeader extends StatelessWidget {
+  const _OrderbookTableHeader();
+
+  @override
+  Widget build(BuildContext context) {
+    final labelStyle = TextStyle(
+      color: MetaServerColors.ink.withValues(alpha: 0.52),
+      fontSize: 11,
+      fontWeight: FontWeight.w900,
+    );
+    return Container(
+      height: 30,
+      padding: const EdgeInsets.symmetric(horizontal: 10),
+      decoration: BoxDecoration(
+        color: MetaServerColors.canvas.withValues(alpha: 0.78),
+        border: Border(
+          bottom:
+              BorderSide(color: MetaServerColors.line.withValues(alpha: 0.8)),
+        ),
+      ),
+      child: Row(
+        children: [
+          SizedBox(width: 30, child: Text('단계', style: labelStyle)),
+          Expanded(flex: 5, child: Text('호가', style: labelStyle)),
+          Expanded(
+            flex: 4,
+            child: Text('잔량', textAlign: TextAlign.right, style: labelStyle),
+          ),
+          const SizedBox(width: 50),
+        ],
+      ),
+    );
+  }
+}
+
+class _OrderbookSummaryStrip extends StatelessWidget {
+  const _OrderbookSummaryStrip({
+    required this.instrument,
+    required this.price,
+    required this.spread,
+    required this.totalAskSize,
+    required this.totalBidSize,
+    required this.quoteTime,
+  });
+
+  final _Instrument instrument;
+  final num? price;
+  final num? spread;
+  final num? totalAskSize;
+  final num? totalBidSize;
+  final String? quoteTime;
+
+  @override
+  Widget build(BuildContext context) {
+    final priceValue = price == null || price! <= 0
+        ? '--'
+        : _orderbookPrice(instrument, price!);
+    final spreadValue = spread == null || spread! <= 0
+        ? '--'
+        : _orderbookPrice(instrument, spread!);
+    final liquidityValue =
+        '${_compactQuantity(totalBidSize ?? 0)} / ${_compactQuantity(totalAskSize ?? 0)}';
+    return Container(
+      padding: const EdgeInsets.fromLTRB(14, 13, 14, 12),
+      decoration: BoxDecoration(
+        color: MetaServerColors.ink,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: MetaServerColors.panel),
+        boxShadow: [
+          BoxShadow(
+            color: MetaServerColors.ink.withValues(alpha: 0.12),
+            blurRadius: 18,
+            offset: const Offset(0, 8),
+          ),
+        ],
+      ),
+      child: Wrap(
+        spacing: 18,
+        runSpacing: 12,
+        alignment: WrapAlignment.spaceBetween,
+        crossAxisAlignment: WrapCrossAlignment.end,
+        children: [
+          ConstrainedBox(
+            constraints: const BoxConstraints(minWidth: 138),
+            child: _OrderbookMetric(
+              label: '기준가',
+              value: priceValue,
+              valueColor: Colors.white,
+              labelColor: Colors.white.withValues(alpha: 0.62),
+              valueSize: 18,
+            ),
+          ),
+          _OrderbookMetric(
+            label: '스프레드',
+            value: spreadValue,
+            alignEnd: true,
+            valueColor: Colors.white.withValues(alpha: 0.92),
+            labelColor: Colors.white.withValues(alpha: 0.58),
+          ),
+          _OrderbookMetric(
+            label: '잔량',
+            value: liquidityValue,
+            alignEnd: true,
+            valueColor: Colors.white.withValues(alpha: 0.92),
+            labelColor: Colors.white.withValues(alpha: 0.58),
+          ),
+          if (quoteTime != null && quoteTime != '--')
+            _OrderbookMetric(
+              label: '시각',
+              value: quoteTime!,
+              alignEnd: true,
+              valueColor: MetaServerColors.mint,
+              labelColor: Colors.white.withValues(alpha: 0.58),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _OrderbookMetric extends StatelessWidget {
+  const _OrderbookMetric({
+    required this.label,
+    required this.value,
+    this.alignEnd = false,
+    this.labelColor,
+    this.valueColor,
+    this.valueSize = 13,
+  });
+
+  final String label;
+  final String value;
+  final bool alignEnd;
+  final Color? labelColor;
+  final Color? valueColor;
+  final double valueSize;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment:
+          alignEnd ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+      children: [
+        Text(
+          label,
+          style: TextStyle(
+            color: labelColor ?? MetaServerColors.ink.withValues(alpha: 0.52),
+            fontSize: 11,
+            fontWeight: FontWeight.w800,
+          ),
+        ),
+        const SizedBox(height: 3),
+        Text(
+          value,
+          style: TextStyle(
+            color: valueColor ?? MetaServerColors.ink,
+            fontSize: valueSize,
+            fontWeight: FontWeight.w900,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _OrderbookMidline extends StatelessWidget {
+  const _OrderbookMidline({required this.spread, required this.instrument});
+
+  final num? spread;
+  final _Instrument instrument;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      height: 32,
+      alignment: Alignment.center,
+      decoration: BoxDecoration(
+        color: MetaServerColors.ink.withValues(alpha: 0.035),
+        border: Border.symmetric(
+          horizontal:
+              BorderSide(color: MetaServerColors.line.withValues(alpha: 0.9)),
+        ),
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Container(
+            width: 6,
+            height: 6,
+            decoration: BoxDecoration(
+              color: MetaServerColors.mint,
+              borderRadius: BorderRadius.circular(999),
+            ),
+          ),
+          const SizedBox(width: 8),
+          Text(
+            spread == null || spread! <= 0
+                ? '스프레드 --'
+                : '스프레드 ${_orderbookPrice(instrument, spread!)}',
+            style: TextStyle(
+              color: MetaServerColors.ink.withValues(alpha: 0.62),
+              fontSize: 12,
+              fontWeight: FontWeight.w900,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _OrderbookLevelRow extends StatelessWidget {
+  const _OrderbookLevelRow({
+    required this.instrument,
+    required this.level,
+    required this.side,
+    required this.maxSize,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final _Instrument instrument;
+  final _BookLevel level;
+  final _TradeSide side;
+  final num maxSize;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final isAsk = side == _TradeSide.buy;
+    final color = isAsk ? MetaServerColors.buy : MetaServerColors.sell;
+    final fraction =
+        maxSize <= 0 ? 0.0 : (level.size / maxSize).clamp(0.06, 1.0).toDouble();
+    return Material(
+      color: selected ? color.withValues(alpha: 0.12) : Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        child: SizedBox(
+          height: 32,
+          child: Stack(
+            children: [
+              Align(
+                alignment: isAsk ? Alignment.centerRight : Alignment.centerLeft,
+                child: FractionallySizedBox(
+                  widthFactor: fraction,
+                  heightFactor: 1,
+                  child: ColoredBox(
+                    color: color.withValues(alpha: selected ? 0.16 : 0.08),
+                  ),
+                ),
+              ),
+              if (selected)
+                Align(
+                  alignment:
+                      isAsk ? Alignment.centerRight : Alignment.centerLeft,
+                  child: Container(width: 3, color: color),
+                ),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 10),
+                child: Row(
+                  children: [
+                    SizedBox(
+                      width: 30,
+                      child: Text(
+                        level.depth.toString(),
+                        style: TextStyle(
+                          color: MetaServerColors.ink.withValues(alpha: 0.38),
+                          fontSize: 11,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                    ),
+                    Expanded(
+                      flex: 5,
+                      child: Text(
+                        _orderbookPrice(instrument, level.price),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          color: color,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w900,
+                        ),
+                      ),
+                    ),
+                    Expanded(
+                      flex: 4,
+                      child: Text(
+                        _compactQuantity(level.size),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        textAlign: TextAlign.right,
+                        style: TextStyle(
+                          color: MetaServerColors.ink.withValues(alpha: 0.66),
+                          fontSize: 12,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Container(
+                      width: 42,
+                      height: 22,
+                      alignment: Alignment.center,
+                      decoration: BoxDecoration(
+                        color: color.withValues(alpha: selected ? 0.18 : 0.1),
+                        borderRadius: BorderRadius.circular(6),
+                        border: Border.all(color: color.withValues(alpha: 0.2)),
+                      ),
+                      child: Text(
+                        isAsk ? '매수' : '매도',
+                        style: TextStyle(
+                          color: color,
+                          fontSize: 11,
+                          fontWeight: FontWeight.w900,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }
@@ -7000,6 +8122,34 @@ String _formatQuantity(num value, {int decimalPlaces = 8}) {
   if (value == value.roundToDouble()) return _comma(value.round());
   final fixed = value.toStringAsFixed(decimalPlaces);
   return fixed.replaceFirst(RegExp(r'\.?0+$'), '');
+}
+
+bool _samePrice(num? left, num right) {
+  if (left == null) return false;
+  return (left - right).abs() < 0.0000001;
+}
+
+String _orderbookPrice(_Instrument instrument, num value) {
+  if (value <= 0) return '--';
+  if (instrument.assetClass == _AssetClass.domesticStock) return _won(value);
+  final suffix = _priceCurrencySuffix(instrument);
+  final decimals = value >= 100
+      ? 2
+      : value >= 1
+          ? 4
+          : 8;
+  return '${_groupedDecimal(value, decimalPlaces: decimals)} $suffix';
+}
+
+String _compactQuantity(num value) {
+  if (value <= 0) return '--';
+  if (value >= 100000000) {
+    return '${_groupedDecimal(value / 100000000, decimalPlaces: 1)}억';
+  }
+  if (value >= 10000) {
+    return '${_groupedDecimal(value / 10000, decimalPlaces: 1)}만';
+  }
+  return _formatQuantity(value, decimalPlaces: 4);
 }
 
 String _formatOrderTime(String? value) {

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import unittest
 from datetime import datetime
+from decimal import Decimal
 
 from app.core.config import Settings
 from app.schemas.trading import (
@@ -202,6 +203,96 @@ class KisDomesticOrderRoutingTest(unittest.TestCase):
 
         self.assertEqual(response.tr_id, "VTTC0803U")
         self.assertNotIn("EXCG_ID_DVSN_CD", response.request_payload)
+
+    def test_domestic_orderbook_maps_quote_levels(self) -> None:
+        client = KisClient(
+            Settings(
+                kis_default_environment="paper",
+                kis_paper_app_key="app",
+                kis_paper_app_secret="secret",
+                kis_paper_account_no="12345678",
+                kis_paper_account_product_code="01",
+            )
+        )
+        self.addCleanup(client._client.close)
+        captured: dict[str, object] = {}
+
+        def request(credentials, method, path, *, tr_id, params=None, **kwargs):
+            captured["method"] = method
+            captured["path"] = path
+            captured["tr_id"] = tr_id
+            captured["params"] = params
+            return {
+                "output1": {
+                    "aspr_acpt_hour": "091530",
+                    "stck_prpr": "69500",
+                    "askp1": "70000",
+                    "askp_rsqn1": "120",
+                    "bidp1": "69900",
+                    "bidp_rsqn1": "80",
+                    "total_askp_rsqn": "5400",
+                    "total_bidp_rsqn": "4700",
+                },
+                "output2": {
+                    "antc_cnpr": "70100",
+                    "antc_vol": "2300",
+                    "antc_cntg_prdy_ctrt": "1.25",
+                },
+            }
+
+        client._request = request
+
+        response = client.domestic_stock_orderbook(symbol="005930", market_code="J")
+
+        self.assertEqual(captured["path"], client.DOMESTIC_ORDERBOOK_PATH)
+        self.assertEqual(captured["tr_id"], "FHKST01010200")
+        self.assertEqual(captured["params"]["FID_INPUT_ISCD"], "005930")
+        self.assertEqual(response.quote_time, "091530")
+        self.assertEqual(response.asks[0].price, Decimal("70000"))
+        self.assertEqual(response.asks[0].size, Decimal("120"))
+        self.assertEqual(response.bids[0].price, Decimal("69900"))
+        self.assertEqual(response.total_ask_size, Decimal("5400"))
+        self.assertEqual(response.expected_price, Decimal("70100"))
+
+    def test_overseas_orderbook_maps_best_bid_and_ask(self) -> None:
+        client = KisClient(
+            Settings(
+                kis_default_environment="paper",
+                kis_paper_app_key="app",
+                kis_paper_app_secret="secret",
+                kis_paper_account_no="12345678",
+                kis_paper_account_product_code="01",
+            )
+        )
+        self.addCleanup(client._client.close)
+        captured: dict[str, object] = {}
+
+        def request(credentials, method, path, *, tr_id, params=None, **kwargs):
+            captured["method"] = method
+            captured["path"] = path
+            captured["tr_id"] = tr_id
+            captured["params"] = params
+            return {
+                "output1": [{"pbid1": "222.20", "pask1": "222.30"}],
+                "output2": [{"vbid1": "340", "vask1": "315"}],
+                "output3": [{"last": "222.27", "base": "220.61", "curr": "USD"}],
+            }
+
+        client._request = request
+
+        response = client.overseas_stock_orderbook(
+            symbol="NVDA",
+            market_code="NASDAQ",
+        )
+
+        self.assertEqual(captured["path"], client.OVERSEAS_ORDERBOOK_PATH)
+        self.assertEqual(captured["tr_id"], "HHDFS76200100")
+        self.assertEqual(captured["params"]["SYMB"], "NVDA")
+        self.assertEqual(response.quote_currency, "USD")
+        self.assertEqual(response.asks[0].price, Decimal("222.30"))
+        self.assertEqual(response.asks[0].size, Decimal("315"))
+        self.assertEqual(response.bids[0].price, Decimal("222.20"))
+        self.assertEqual(response.current_price, Decimal("222.27"))
 
 
 if __name__ == "__main__":

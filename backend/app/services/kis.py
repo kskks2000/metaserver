@@ -26,6 +26,8 @@ from app.schemas.trading import (
     DomesticStockOrderResponse,
     DomesticStockQuoteResponse,
     KisConnectionStatusResponse,
+    KisOrderbookLevel,
+    KisOrderbookResponse,
     KisOrderActivityItem,
     KisOrderActivityResponse,
     KisPortfolioHolding,
@@ -99,7 +101,11 @@ class KisClient:
     TOKEN_PATH = "/oauth2/tokenP"
     HASHKEY_PATH = "/uapi/hashkey"
     QUOTE_PATH = "/uapi/domestic-stock/v1/quotations/inquire-price"
+    DOMESTIC_ORDERBOOK_PATH = (
+        "/uapi/domestic-stock/v1/quotations/inquire-asking-price-exp-ccn"
+    )
     OVERSEAS_QUOTE_PATH = "/uapi/overseas-price/v1/quotations/price"
+    OVERSEAS_ORDERBOOK_PATH = "/uapi/overseas-price/v1/quotations/inquire-asking-price"
     ORDER_PATH = "/uapi/domestic-stock/v1/trading/order-cash"
     ORDER_AMEND_CANCEL_PATH = "/uapi/domestic-stock/v1/trading/order-rvsecncl"
     OVERSEAS_ORDER_PATH = "/uapi/overseas-stock/v1/trading/order"
@@ -278,6 +284,131 @@ class KisClient:
             accumulated_volume=self._decimal(output.get("tvol")),
             accumulated_trade_amount=self._decimal(output.get("tamt")),
             raw_output=output,
+        )
+
+    def domestic_stock_orderbook(
+        self,
+        *,
+        symbol: str,
+        market_code: str = "J",
+        environment: BrokerEnvironment | None = None,
+    ) -> KisOrderbookResponse:
+        env = environment or BrokerEnvironment(self._settings.kis_default_environment)
+        credentials = self._credentials(env)
+        normalized_symbol = symbol.strip().upper()
+        if not normalized_symbol:
+            raise KisOrderValidationError("Domestic stock symbol is required.")
+
+        data = self._request(
+            credentials,
+            "GET",
+            self.DOMESTIC_ORDERBOOK_PATH,
+            tr_id="FHKST01010200",
+            params={
+                "FID_COND_MRKT_DIV_CODE": market_code.strip().upper() or "J",
+                "FID_INPUT_ISCD": normalized_symbol,
+            },
+        )
+        output1 = self._as_dict(data.get("output1"))
+        output2 = self._as_dict(data.get("output2"))
+        asks = [
+            KisOrderbookLevel(
+                depth=depth,
+                price=self._decimal(output1.get(f"askp{depth}")),
+                size=self._decimal(output1.get(f"askp_rsqn{depth}")),
+                change=self._decimal(output1.get(f"askp_rsqn_icdc{depth}")),
+            )
+            for depth in range(1, 11)
+        ]
+        bids = [
+            KisOrderbookLevel(
+                depth=depth,
+                price=self._decimal(output1.get(f"bidp{depth}")),
+                size=self._decimal(output1.get(f"bidp_rsqn{depth}")),
+                change=self._decimal(output1.get(f"bidp_rsqn_icdc{depth}")),
+            )
+            for depth in range(1, 11)
+        ]
+        return KisOrderbookResponse(
+            environment=env,
+            asset_class=AssetClass.domestic_stock,
+            market_code=market_code.strip().upper() or "J",
+            symbol=normalized_symbol,
+            quote_currency="KRW",
+            quote_time=self._clean_string(output1.get("aspr_acpt_hour")),
+            current_price=self._decimal_first(output1, "stck_prpr")
+            or self._decimal_first(output2, "stck_prpr"),
+            previous_close=self._decimal_first(output1, "stck_sdpr")
+            or self._decimal_first(output2, "stck_sdpr"),
+            change_rate=self._decimal_first(output2, "antc_cntg_prdy_ctrt"),
+            expected_price=self._decimal_first(output2, "antc_cnpr"),
+            expected_volume=self._decimal_first(output2, "antc_vol"),
+            total_ask_size=self._decimal_first(output1, "total_askp_rsqn"),
+            total_bid_size=self._decimal_first(output1, "total_bidp_rsqn"),
+            asks=[level for level in asks if level.price is not None],
+            bids=[level for level in bids if level.price is not None],
+            raw_output={"output1": output1, "output2": output2},
+        )
+
+    def overseas_stock_orderbook(
+        self,
+        *,
+        symbol: str,
+        market_code: str = "NASDAQ",
+        environment: BrokerEnvironment | None = None,
+    ) -> KisOrderbookResponse:
+        env = environment or BrokerEnvironment(self._settings.kis_default_environment)
+        credentials = self._credentials(env)
+        market = self._overseas_us_market(market_code)
+        normalized_symbol = symbol.strip().upper()
+        if not normalized_symbol:
+            raise KisOrderValidationError("US stock symbol is required.")
+
+        data = self._request(
+            credentials,
+            "GET",
+            self.OVERSEAS_ORDERBOOK_PATH,
+            tr_id="HHDFS76200100",
+            params={
+                "AUTH": "",
+                "EXCD": market.quote_code,
+                "SYMB": normalized_symbol,
+            },
+        )
+        output1 = self._first_dict(data.get("output1"))
+        output2 = self._first_dict(data.get("output2"))
+        output3 = self._first_dict(data.get("output3"))
+        merged = {**output1, **output2, **output3}
+        ask = KisOrderbookLevel(
+            depth=1,
+            price=self._decimal_first(merged, "pask1", "pask"),
+            size=self._decimal_first(merged, "vask1", "vask", "avol"),
+            change=self._decimal_first(merged, "dask1"),
+        )
+        bid = KisOrderbookLevel(
+            depth=1,
+            price=self._decimal_first(merged, "pbid1", "pbid"),
+            size=self._decimal_first(merged, "vbid1", "vbid", "bvol"),
+            change=self._decimal_first(merged, "dbid1"),
+        )
+        return KisOrderbookResponse(
+            environment=env,
+            asset_class=AssetClass.overseas_stock,
+            market_code=market.market_code,
+            symbol=normalized_symbol,
+            quote_currency=str(merged.get("curr") or market.currency),
+            quote_time=self._clean_string(merged.get("dhms")),
+            current_price=self._decimal_first(merged, "last"),
+            previous_close=self._decimal_first(merged, "base"),
+            total_ask_size=self._decimal_first(merged, "avol"),
+            total_bid_size=self._decimal_first(merged, "bvol"),
+            asks=[ask] if ask.price is not None else [],
+            bids=[bid] if bid.price is not None else [],
+            raw_output={
+                "output1": output1,
+                "output2": output2,
+                "output3": output3,
+            },
         )
 
     def market_status(

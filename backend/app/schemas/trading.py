@@ -470,6 +470,32 @@ class UpbitOrderbookResponse(BaseModel):
     raw_output: dict[str, Any] = Field(default_factory=dict)
 
 
+class KisOrderbookLevel(BaseModel):
+    depth: int
+    price: Decimal | None = None
+    size: Decimal | None = None
+    change: Decimal | None = None
+
+
+class KisOrderbookResponse(BaseModel):
+    environment: BrokerEnvironment
+    asset_class: AssetClass
+    market_code: str
+    symbol: str
+    quote_currency: str = "KRW"
+    quote_time: str | None = None
+    current_price: Decimal | None = None
+    previous_close: Decimal | None = None
+    change_rate: Decimal | None = None
+    expected_price: Decimal | None = None
+    expected_volume: Decimal | None = None
+    total_ask_size: Decimal | None = None
+    total_bid_size: Decimal | None = None
+    asks: list[KisOrderbookLevel]
+    bids: list[KisOrderbookLevel]
+    raw_output: dict[str, Any] = Field(default_factory=dict)
+
+
 class UpbitPortfolioHolding(BaseModel):
     market: str
     symbol: str

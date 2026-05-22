@@ -25,6 +25,7 @@ from app.schemas.trading import (
     DomesticStockSearchItem,
     DomesticStockSearchResponse,
     KisConnectionStatusResponse,
+    KisOrderbookResponse,
     KisOrderActivityResponse,
     KisPortfolioResponse,
     MarketStatusItem,
@@ -312,6 +313,46 @@ def overseas_stock_quote(
 ) -> OverseasStockQuoteResponse:
     try:
         return get_kis_client().quote_overseas_stock(
+            symbol=symbol.upper(),
+            market_code=market_code.upper(),
+            environment=environment,
+        )
+    except (KisConfigurationError, KisOrderValidationError, KisApiError) as exc:
+        _raise_kis_error(exc)
+        raise
+
+
+@router.get(
+    "/domestic-stocks/{symbol}/orderbook",
+    response_model=KisOrderbookResponse,
+)
+def domestic_stock_orderbook(
+    symbol: str,
+    market_code: str = Query(default="J", min_length=1, max_length=4),
+    environment: BrokerEnvironment | None = None,
+) -> KisOrderbookResponse:
+    try:
+        return get_kis_client().domestic_stock_orderbook(
+            symbol=symbol.upper(),
+            market_code=market_code.upper(),
+            environment=environment,
+        )
+    except (KisConfigurationError, KisOrderValidationError, KisApiError) as exc:
+        _raise_kis_error(exc)
+        raise
+
+
+@router.get(
+    "/overseas-stocks/{symbol}/orderbook",
+    response_model=KisOrderbookResponse,
+)
+def overseas_stock_orderbook(
+    symbol: str,
+    market_code: str = Query(default="NASDAQ", min_length=2, max_length=10),
+    environment: BrokerEnvironment | None = None,
+) -> KisOrderbookResponse:
+    try:
+        return get_kis_client().overseas_stock_orderbook(
             symbol=symbol.upper(),
             market_code=market_code.upper(),
             environment=environment,

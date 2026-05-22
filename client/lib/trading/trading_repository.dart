@@ -61,6 +61,26 @@ class TradingRepository {
     return DomesticStockQuote.fromJson(data);
   }
 
+  Future<KisOrderbook> loadDomesticOrderbook(
+    String symbol, {
+    String marketCode = 'J',
+  }) async {
+    final data = await _apiClient.getJson(
+      '/trading/domestic-stocks/${Uri.encodeComponent(symbol)}/orderbook?market_code=${Uri.encodeQueryComponent(marketCode)}',
+    );
+    return KisOrderbook.fromJson(data);
+  }
+
+  Future<KisOrderbook> loadOverseasOrderbook(
+    String symbol, {
+    String marketCode = 'NASDAQ',
+  }) async {
+    final data = await _apiClient.getJson(
+      '/trading/overseas-stocks/${Uri.encodeComponent(symbol)}/orderbook?market_code=${Uri.encodeQueryComponent(marketCode)}',
+    );
+    return KisOrderbook.fromJson(data);
+  }
+
   Future<DomesticStockQuote> loadUpbitQuote(String market) async {
     final data = await _apiClient.getJson(
       '/trading/upbit/markets/${Uri.encodeComponent(market)}/ticker',
@@ -1020,19 +1040,115 @@ class DomesticStockOrderResult {
   }
 }
 
+class KisOrderbook {
+  const KisOrderbook({
+    required this.environment,
+    required this.assetClass,
+    required this.marketCode,
+    required this.symbol,
+    required this.quoteCurrency,
+    required this.asks,
+    required this.bids,
+    this.quoteTime,
+    this.currentPrice,
+    this.previousClose,
+    this.changeRate,
+    this.expectedPrice,
+    this.expectedVolume,
+    this.totalAskSize,
+    this.totalBidSize,
+  });
+
+  final String environment;
+  final String assetClass;
+  final String marketCode;
+  final String symbol;
+  final String quoteCurrency;
+  final String? quoteTime;
+  final double? currentPrice;
+  final double? previousClose;
+  final double? changeRate;
+  final double? expectedPrice;
+  final double? expectedVolume;
+  final double? totalAskSize;
+  final double? totalBidSize;
+  final List<OrderbookLevel> asks;
+  final List<OrderbookLevel> bids;
+
+  factory KisOrderbook.fromJson(Map<String, dynamic> json) {
+    return KisOrderbook(
+      environment: json['environment']?.toString() ?? 'paper',
+      assetClass: json['asset_class']?.toString() ?? 'domestic_stock',
+      marketCode: json['market_code']?.toString() ?? '',
+      symbol: json['symbol']?.toString() ?? '',
+      quoteCurrency: json['quote_currency']?.toString() ?? 'KRW',
+      quoteTime: json['quote_time']?.toString(),
+      currentPrice: _asDouble(json['current_price']),
+      previousClose: _asDouble(json['previous_close']),
+      changeRate: _asDouble(json['change_rate']),
+      expectedPrice: _asDouble(json['expected_price']),
+      expectedVolume: _asDouble(json['expected_volume']),
+      totalAskSize: _asDouble(json['total_ask_size']),
+      totalBidSize: _asDouble(json['total_bid_size']),
+      asks: _orderbookLevels(json['asks']),
+      bids: _orderbookLevels(json['bids']),
+    );
+  }
+}
+
+class OrderbookLevel {
+  const OrderbookLevel({
+    required this.depth,
+    required this.price,
+    required this.size,
+    this.change,
+  });
+
+  final int depth;
+  final double price;
+  final double size;
+  final double? change;
+
+  factory OrderbookLevel.fromJson(Map<String, dynamic> json) {
+    return OrderbookLevel(
+      depth: _asInt(json['depth']),
+      price: _asDouble(json['price']) ?? 0,
+      size: _asDouble(json['size']) ?? 0,
+      change: _asDouble(json['change']),
+    );
+  }
+}
+
+List<OrderbookLevel> _orderbookLevels(Object? value) {
+  if (value is! List) return const [];
+  return [
+    for (final item in value)
+      if (item is Map<String, dynamic>)
+        OrderbookLevel.fromJson(item)
+      else if (item is Map)
+        OrderbookLevel.fromJson(Map<String, dynamic>.from(item)),
+  ].where((level) => level.price > 0).toList(growable: false);
+}
+
 class UpbitOrderbook {
   const UpbitOrderbook({
     required this.market,
+    this.totalAskSize,
+    this.totalBidSize,
     required this.units,
   });
 
   final String market;
+  final double? totalAskSize;
+  final double? totalBidSize;
   final List<UpbitOrderbookUnit> units;
 
   factory UpbitOrderbook.fromJson(Map<String, dynamic> json) {
     final rawUnits = json['units'];
     return UpbitOrderbook(
       market: json['market']?.toString() ?? '',
+      totalAskSize: _asDouble(json['total_ask_size']),
+      totalBidSize: _asDouble(json['total_bid_size']),
       units: [
         if (rawUnits is List)
           for (final item in rawUnits)
