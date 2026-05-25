@@ -4621,7 +4621,10 @@ class _UpbitOrderbookPanel extends StatelessWidget {
                         size: units[i].bidSize,
                       ),
                   ],
-                  currentPrice: null,
+                  currentPrice: _upbitOrderbookReferencePrice(
+                    instrument,
+                    units,
+                  ),
                   totalAskSize: orderbook?.totalAskSize,
                   totalBidSize: orderbook?.totalBidSize,
                   selectedPrice: selectedPrice,
@@ -8127,6 +8130,23 @@ String _formatQuantity(num value, {int decimalPlaces = 8}) {
 bool _samePrice(num? left, num right) {
   if (left == null) return false;
   return (left - right).abs() < 0.0000001;
+}
+
+num? _upbitOrderbookReferencePrice(
+  _Instrument instrument,
+  List<UpbitOrderbookUnit> units,
+) {
+  if (_hasDisplayQuote(instrument)) return instrument.price;
+  for (final unit in units) {
+    final askPrice = unit.askPrice;
+    final bidPrice = unit.bidPrice;
+    if (askPrice > 0 && bidPrice > 0) {
+      return (askPrice + bidPrice) / 2;
+    }
+    if (askPrice > 0) return askPrice;
+    if (bidPrice > 0) return bidPrice;
+  }
+  return null;
 }
 
 String _orderbookPrice(_Instrument instrument, num value) {
