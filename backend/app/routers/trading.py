@@ -283,6 +283,24 @@ def search_domestic_stocks(
 
 
 @router.get(
+    "/overseas-stocks/search",
+    response_model=DomesticStockSearchResponse,
+)
+def search_overseas_stocks(
+    q: str = Query(default="", max_length=80),
+    limit: int = Query(default=50, ge=1, le=100),
+) -> DomesticStockSearchResponse:
+    try:
+        items = get_yahoo_market_data_client().search_us_stocks(q, limit=limit)
+    except MarketDataError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
+    return DomesticStockSearchResponse(query=q, items=items)
+
+
+@router.get(
     "/domestic-stocks/{symbol}/quote",
     response_model=DomesticStockQuoteResponse,
 )

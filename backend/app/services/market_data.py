@@ -8,7 +8,11 @@ from urllib.parse import quote
 
 import httpx
 
-from app.schemas.trading import MarketStatusItem, UsStockMarketCapItem
+from app.schemas.trading import (
+    DomesticStockSearchItem,
+    MarketStatusItem,
+    UsStockMarketCapItem,
+)
 
 
 class MarketDataError(RuntimeError):
@@ -17,6 +21,7 @@ class MarketDataError(RuntimeError):
 
 class YahooMarketDataClient:
     CHART_BASE_URL = "https://query2.finance.yahoo.com/v8/finance/chart"
+    SEARCH_BASE_URL = "https://query2.finance.yahoo.com/v1/finance/search"
     US_MARKET_CAP_URL = "https://stockanalysis.com/list/biggest-companies/"
 
     def __init__(self, client: httpx.Client | None = None) -> None:
@@ -93,6 +98,34 @@ class YahooMarketDataClient:
             raise MarketDataError("US market-cap ranking response was empty.")
         return items[: max(1, min(limit, 50))]
 
+    def search_us_stocks(
+        self,
+        query: str,
+        limit: int = 20,
+    ) -> list[DomesticStockSearchItem]:
+        normalized_query = query.strip()
+        if not normalized_query:
+            return []
+        effective_limit = max(1, min(limit, 50))
+        try:
+            response = self._client.get(
+                self.SEARCH_BASE_URL,
+                params={
+                    "q": normalized_query,
+                    "quotesCount": effective_limit,
+                    "newsCount": 0,
+                    "enableFuzzyQuery": "true",
+                },
+                headers={"User-Agent": "MetaServer/1.0"},
+            )
+            response.raise_for_status()
+            data = response.json()
+        except (httpx.HTTPError, ValueError, KeyError, TypeError) as exc:
+            raise MarketDataError("US stock search failed.") from exc
+        return self._parse_us_stock_search(data.get("quotes"), normalized_query)[
+            :effective_limit
+        ]
+
     @staticmethod
     def _decimal(value: Any) -> Decimal | None:
         if value is None or value == "":
@@ -137,6 +170,112 @@ class YahooMarketDataClient:
                 )
             )
         return rows
+
+    @classmethod
+    def _parse_us_stock_search(
+        cls,
+        quotes: Any,
+        query: str = "",
+    ) -> list[DomesticStockSearchItem]:
+        if not isinstance(quotes, list):
+            return []
+
+        normalized_query = re.sub(r"[^A-Z0-9./-]", "", query.upper())
+        ranked_items: list[tuple[int, DomesticStockSearchItem]] = []
+        seen: set[tuple[str, str]] = set()
+        for index, item in enumerate(quotes):
+            if not isinstance(item, dict):
+                continue
+            quote_type = str(item.get("quoteType") or "").upper()
+            if quote_type not in {"EQUITY", "ETF"}:
+                continue
+            market = cls._us_market_code(item)
+            if market is None:
+                continue
+            symbol = cls._normalize_us_stock_symbol(str(item.get("symbol") or ""))
+            if not symbol:
+                continue
+            key = (market, symbol)
+            if key in seen:
+                continue
+            seen.add(key)
+            name = (
+                str(item.get("longname") or "").strip()
+                or str(item.get("shortname") or "").strip()
+                or str(item.get("name") or "").strip()
+                or symbol
+            )
+            sector = "ETF" if quote_type == "ETF" else "US Stock"
+            exchange = str(
+                item.get("exchDisp") or item.get("exchange") or market
+            ).strip()
+            ranked_items.append(
+                (
+                    index,
+                    DomesticStockSearchItem(
+                        market=market,
+                        symbol=symbol,
+                        name=name,
+                        sector=sector,
+                        standard_code=exchange or None,
+                    ),
+                )
+            )
+
+        ranked_items.sort(
+            key=lambda ranked: (
+                0 if ranked[1].symbol == normalized_query else 1,
+                ranked[0],
+            )
+        )
+        return [item for _, item in ranked_items]
+
+    @staticmethod
+    def _normalize_us_stock_symbol(value: str) -> str:
+        symbol = re.sub(r"[^A-Z0-9./-]", "", value.strip().upper())
+        if re.fullmatch(r"[A-Z]+-[A-Z]", symbol):
+            return symbol.replace("-", ".")
+        return symbol
+
+    @staticmethod
+    def _us_market_code(item: dict[str, Any]) -> str | None:
+        aliases = {
+            "NMS": "NASDAQ",
+            "NCM": "NASDAQ",
+            "NGM": "NASDAQ",
+            "NAS": "NASDAQ",
+            "NASDAQ": "NASDAQ",
+            "NASDAQGS": "NASDAQ",
+            "NASDAQGM": "NASDAQ",
+            "NASDAQCM": "NASDAQ",
+            "NYQ": "NYSE",
+            "NYS": "NYSE",
+            "NYSE": "NYSE",
+            "NEWYORKSTOCKEXCHANGE": "NYSE",
+            "ASE": "AMEX",
+            "AMEX": "AMEX",
+            "NYSEAMERICAN": "AMEX",
+            "NYSEMKT": "AMEX",
+            "NYSEARCA": "AMEX",
+            "PCX": "AMEX",
+            "ARCX": "AMEX",
+        }
+        for key in ("exchange", "exchDisp", "fullExchangeName"):
+            raw_value = item.get(key)
+            if raw_value is None:
+                continue
+            normalized = re.sub(r"[^A-Z]", "", str(raw_value).upper())
+            if normalized in aliases:
+                return aliases[normalized]
+            if "NASDAQ" in normalized:
+                return "NASDAQ"
+            if "NYSEAMERICAN" in normalized or "NYSEMKT" in normalized:
+                return "AMEX"
+            if "NYSEARCA" in normalized:
+                return "AMEX"
+            if normalized == "NYSE":
+                return "NYSE"
+        return None
 
     @staticmethod
     def _strip_html(value: str) -> str:

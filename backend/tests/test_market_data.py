@@ -63,6 +63,55 @@ class YahooMarketDataClientTest(unittest.TestCase):
         self.assertEqual(str(items[0].price), "222.32")
         self.assertEqual(str(items[0].change_rate), "-1.33")
 
+    def test_search_us_stocks_maps_yahoo_quotes_to_supported_markets(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            self.assertEqual(request.url.path, "/v1/finance/search")
+            self.assertEqual(request.url.params["q"], "mu")
+            return httpx.Response(
+                200,
+                json={
+                    "quotes": [
+                        {
+                            "symbol": "MUA",
+                            "quoteType": "ETF",
+                            "exchange": "PCX",
+                            "shortname": "BlackRock MuniAssets Fund",
+                        },
+                        {
+                            "symbol": "MU",
+                            "quoteType": "EQUITY",
+                            "exchange": "NMS",
+                            "longname": "Micron Technology, Inc.",
+                            "exchDisp": "NASDAQ",
+                        },
+                        {
+                            "symbol": "MUT",
+                            "quoteType": "MUTUALFUND",
+                            "exchange": "NAS",
+                            "shortname": "Unsupported Fund",
+                        },
+                        {
+                            "symbol": "OTCM",
+                            "quoteType": "EQUITY",
+                            "exchange": "PNK",
+                            "shortname": "OTC Markets Group Inc.",
+                        },
+                    ]
+                },
+            )
+
+        client = YahooMarketDataClient(
+            httpx.Client(transport=httpx.MockTransport(handler))
+        )
+
+        items = client.search_us_stocks("mu", limit=10)
+
+        self.assertEqual([item.symbol for item in items], ["MU", "MUA"])
+        self.assertEqual(items[0].market, "NASDAQ")
+        self.assertEqual(items[0].name, "Micron Technology, Inc.")
+        self.assertEqual(items[1].market, "AMEX")
+        self.assertEqual(items[1].sector, "ETF")
+
 
 if __name__ == "__main__":
     unittest.main()

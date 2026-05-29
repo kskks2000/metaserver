@@ -1117,6 +1117,7 @@ class _AddInstrumentDialogState extends ConsumerState<_AddInstrumentDialog> {
   late String _market;
   String? _validationError;
   String? _searchError;
+  String _searchQueryForResults = '';
   bool _searching = false;
   List<DomesticStockSearchResult> _searchResults = const [];
   DomesticStockSearchResult? _selectedItem;
@@ -1151,6 +1152,7 @@ class _AddInstrumentDialogState extends ConsumerState<_AddInstrumentDialog> {
 
   Future<void> _runSearch(String query) async {
     final epoch = ++_searchEpoch;
+    final normalizedQuery = query.trim();
     setState(() {
       _searching = true;
       _searchError = null;
@@ -1161,10 +1163,13 @@ class _AddInstrumentDialogState extends ConsumerState<_AddInstrumentDialog> {
           ? await repository.searchDomesticStocks(query, limit: 60)
           : widget.assetClass == _AssetClass.crypto
               ? await repository.searchUpbitMarkets(query, limit: 60)
-              : _localCatalogResults(query);
+              : normalizedQuery.isEmpty
+                  ? _localCatalogResults(query)
+                  : await repository.searchOverseasStocks(query, limit: 60);
       if (!mounted || epoch != _searchEpoch) return;
       setState(() {
         _searchResults = results;
+        _searchQueryForResults = normalizedQuery;
         _searching = false;
       });
     } catch (_) {
@@ -1172,6 +1177,7 @@ class _AddInstrumentDialogState extends ConsumerState<_AddInstrumentDialog> {
       final fallback = _localCatalogResults(query);
       setState(() {
         _searchResults = fallback;
+        _searchQueryForResults = normalizedQuery;
         _searching = false;
         _searchError = '${widget.assetClass.label} 종목 검색을 불러오지 못했습니다.';
       });
@@ -1217,24 +1223,54 @@ class _AddInstrumentDialogState extends ConsumerState<_AddInstrumentDialog> {
       _nameController.text = item.name;
       _sectorController.text = item.sector;
       _searchController.text = '${item.name} ${item.symbol}';
+      _searchQueryForResults = _searchController.text.trim();
       _validationError = null;
     });
   }
 
-  void _submit() {
-    final searchSymbol =
-        _normalizeAssetSymbol(_searchController.text, widget.assetClass);
-    final exactSearchMatch = _searchResults.where(
-      (item) => item.symbol == searchSymbol,
-    );
-    if (_symbolController.text.trim().isEmpty && searchSymbol.isNotEmpty) {
-      _symbolController.text = searchSymbol;
-      if (exactSearchMatch.isNotEmpty) {
-        final item = exactSearchMatch.first;
-        _market = item.market;
-        _nameController.text = item.name;
-        _sectorController.text = item.sector;
+  DomesticStockSearchResult? _resultForSearchQuery(String query) {
+    final searchSymbol = _normalizeAssetSymbol(query, widget.assetClass);
+    if (searchSymbol.isNotEmpty) {
+      for (final item in _searchResults) {
+        if (_normalizeAssetSymbol(item.symbol, widget.assetClass) ==
+            searchSymbol) {
+          return item;
+        }
       }
+    }
+    if (_searchResults.length == 1) return _searchResults.first;
+    return null;
+  }
+
+  void _applySearchResult(DomesticStockSearchResult item) {
+    _selectedItem = item;
+    _market = item.market;
+    _symbolController.text = item.symbol;
+    _nameController.text = item.name;
+    _sectorController.text = item.sector;
+  }
+
+  void _submit() {
+    final searchQuery = _searchController.text.trim();
+    if (_selectedItem == null &&
+        _symbolController.text.trim().isEmpty &&
+        searchQuery.isNotEmpty) {
+      if (_searching || _searchQueryForResults != searchQuery) {
+        setState(() {
+          _validationError = '${widget.assetClass.label} 검색 결과를 확인 중입니다.';
+        });
+        _runSearch(searchQuery);
+        return;
+      }
+
+      final searchItem = _resultForSearchQuery(searchQuery);
+      if (searchItem == null) {
+        setState(() {
+          _validationError = '검색 결과에서 정확한 종목을 선택해 주세요.';
+        });
+        return;
+      }
+      _applySearchResult(searchItem);
     }
 
     final symbol =
@@ -1337,6 +1373,12 @@ class _AddInstrumentDialogState extends ConsumerState<_AddInstrumentDialog> {
                             setState(() {
                               _searchController.clear();
                               _selectedItem = null;
+                              _symbolController.clear();
+                              _nameController.clear();
+                              _sectorController.clear();
+                              _market = _defaultMarketForAssetClass(
+                                  widget.assetClass);
+                              _searchQueryForResults = '';
                               _validationError = null;
                             });
                             _scheduleSearch('');
@@ -1350,6 +1392,10 @@ class _AddInstrumentDialogState extends ConsumerState<_AddInstrumentDialog> {
                   setState(() {
                     _validationError = null;
                     _selectedItem = null;
+                    _symbolController.clear();
+                    _nameController.clear();
+                    _sectorController.clear();
+                    _market = _defaultMarketForAssetClass(widget.assetClass);
                   });
                   _scheduleSearch(value);
                 },

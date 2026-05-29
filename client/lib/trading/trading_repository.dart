@@ -120,6 +120,24 @@ class TradingRepository {
     ];
   }
 
+  Future<List<DomesticStockSearchResult>> searchOverseasStocks(
+    String query, {
+    int limit = 50,
+  }) async {
+    final data = await _apiClient.getJson(
+      '/trading/overseas-stocks/search?q=${Uri.encodeQueryComponent(query)}&limit=$limit',
+    );
+    final rawItems = data['items'];
+    if (rawItems is! List) return const [];
+    return [
+      for (final item in rawItems)
+        if (item is Map<String, dynamic>)
+          DomesticStockSearchResult.fromJson(item)
+        else if (item is Map)
+          DomesticStockSearchResult.fromJson(Map<String, dynamic>.from(item)),
+    ];
+  }
+
   Future<List<DomesticStockSearchResult>> searchUpbitMarkets(
     String query, {
     int limit = 50,
