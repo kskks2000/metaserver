@@ -4,9 +4,11 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'app/metaserver_app.dart';
 import 'firebase_options.dart';
+import 'trading/trading_local_storage.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await initializeTradingLocalStorage();
   await Firebase.initializeApp(
     options: DefaultFirebaseOptions.currentPlatform,
   );

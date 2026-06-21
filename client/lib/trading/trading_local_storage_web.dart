@@ -2,6 +2,8 @@
 
 import 'dart:html' as html;
 
+Future<void> initializeTradingLocalStorage() async {}
+
 String? loadTradingLocalValue(String key) => html.window.localStorage[key];
 
 void saveTradingLocalValue(String key, String value) {
