@@ -7,6 +7,7 @@ import 'package:go_router/go_router.dart';
 
 import '../app/theme.dart';
 import '../core/api_client.dart';
+import '../widgets/asset_logo.dart';
 import '../widgets/brand_mark.dart';
 import '../widgets/thousands_input_formatter.dart';
 import 'auto_trading_repository.dart';
@@ -2652,11 +2653,13 @@ class _SymbolOptionPill extends StatelessWidget {
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(
-                _assetIcon(option.assetClass),
-                color:
-                    selected ? MetaServerColors.green : MetaServerColors.cyan,
-                size: 16,
+              AssetLogo(
+                symbol: option.symbol,
+                name: option.name,
+                assetClass: option.assetClass,
+                market: option.market,
+                size: 26,
+                compact: true,
               ),
               const SizedBox(width: 7),
               Flexible(
@@ -2911,7 +2914,15 @@ class _StrategyCard extends StatelessWidget {
         children: [
           Row(
             children: [
-              _SoftIcon(icon: _strategyIcon(strategy.strategyType)),
+              if (symbol != null && symbol.isNotEmpty)
+                AssetLogo(
+                  symbol: symbol,
+                  name: strategy.name,
+                  assetClass: assetClass,
+                  market: market,
+                )
+              else
+                _SoftIcon(icon: _strategyIcon(strategy.strategyType)),
               const SizedBox(width: 10),
               Expanded(
                 child: Column(
@@ -3082,7 +3093,16 @@ class _CompactStrategyRow extends StatelessWidget {
       ),
       child: Row(
         children: [
-          _SoftIcon(icon: _strategyIcon(strategy.strategyType), size: 40),
+          if (symbol != null && symbol.isNotEmpty)
+            AssetLogo(
+              symbol: symbol,
+              name: strategy.name,
+              assetClass: assetClass,
+              market: market,
+              size: 40,
+            )
+          else
+            _SoftIcon(icon: _strategyIcon(strategy.strategyType), size: 40),
           const SizedBox(width: 10),
           Expanded(
             child: Column(
@@ -3160,9 +3180,11 @@ class _SignalRow extends StatelessWidget {
       ),
       child: Row(
         children: [
-          _SoftIcon(
-            icon: blocked ? Icons.block_rounded : Icons.bolt_rounded,
-            color: color,
+          AssetLogo(
+            symbol: signal.symbol,
+            name: signal.name,
+            assetClass: signal.assetClass,
+            size: 40,
           ),
           const SizedBox(width: 10),
           Expanded(
@@ -3232,6 +3254,9 @@ class _ActionRow extends StatelessWidget {
       'failed' || 'canceled' => MetaServerColors.danger,
       _ => MetaServerColors.amber,
     };
+    final symbol = action.symbol ?? action.requestPayload['symbol']?.toString();
+    final assetClass = action.requestPayload['asset_class']?.toString();
+    final market = action.requestPayload['market']?.toString();
     final title = [
       action.symbol ?? action.requestPayload['symbol']?.toString() ?? '종목',
       _actionLabel(action.actionType),
@@ -3247,7 +3272,16 @@ class _ActionRow extends StatelessWidget {
       ),
       child: Row(
         children: [
-          _SoftIcon(icon: Icons.receipt_long_rounded, color: color),
+          if (symbol != null && symbol.isNotEmpty)
+            AssetLogo(
+              symbol: symbol,
+              name: action.name,
+              assetClass: assetClass,
+              market: market,
+              size: 40,
+            )
+          else
+            _SoftIcon(icon: Icons.receipt_long_rounded, color: color),
           const SizedBox(width: 10),
           Expanded(
             child: Column(
@@ -3915,14 +3949,6 @@ List<AutoSymbolSearchResult> _uniqueSymbolOptions(
     if (seen.add(key)) result.add(option);
   }
   return result;
-}
-
-IconData _assetIcon(String assetClass) {
-  return switch (assetClass) {
-    'overseas_stock' => Icons.public_rounded,
-    'crypto' => Icons.currency_bitcoin_rounded,
-    _ => Icons.flag_circle_outlined,
-  };
 }
 
 IconData _strategyIcon(String type) {

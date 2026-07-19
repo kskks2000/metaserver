@@ -8,6 +8,7 @@ import 'package:go_router/go_router.dart';
 
 import '../app/theme.dart';
 import '../core/api_client.dart';
+import '../widgets/asset_logo.dart';
 import '../widgets/brand_mark.dart';
 import '../widgets/thousands_input_formatter.dart';
 import 'trading_local_storage.dart';
@@ -1645,11 +1646,12 @@ class _StockSearchTile extends StatelessWidget {
         child: ListTile(
           enabled: !alreadyAdded,
           onTap: alreadyAdded ? null : onTap,
-          leading: _IconBadge(
-            icon: Icons.show_chart_rounded,
-            color: alreadyAdded
-                ? MetaServerColors.ink.withValues(alpha: 0.38)
-                : MetaServerColors.green,
+          leading: AssetLogo(
+            symbol: item.symbol,
+            name: item.name,
+            assetClass: assetClass.storageValue,
+            market: item.market,
+            size: 40,
           ),
           title: Text(
             item.name,
@@ -2754,6 +2756,14 @@ class _OrderTicketTabState extends ConsumerState<_OrderTicketTab> {
                       label: '종목',
                       value:
                           '${widget.instrument.name} ${widget.instrument.symbol}',
+                      valueLeading: AssetLogo(
+                        symbol: widget.instrument.symbol,
+                        name: widget.instrument.name,
+                        assetClass: widget.instrument.assetClass.storageValue,
+                        market: widget.instrument.market,
+                        size: 24,
+                        compact: true,
+                      ),
                     ),
                     _ReviewRow(label: '구분', value: sideText),
                     _ReviewRow(
@@ -4522,6 +4532,14 @@ class _KisOrderbookTradePanel extends StatelessWidget {
     return _OrderbookPanelShell(
       title: '호가 주문',
       subtitle: '${instrument.name} · ${instrument.symbol}',
+      leading: AssetLogo(
+        symbol: instrument.symbol,
+        name: instrument.name,
+        assetClass: instrument.assetClass.storageValue,
+        market: instrument.market,
+        size: 34,
+        compact: true,
+      ),
       onRefresh: onRefresh,
       child: orderbookFuture == null
           ? const _PanelStateMessage(
@@ -4617,6 +4635,14 @@ class _UpbitOrderbookPanel extends StatelessWidget {
     return _OrderbookPanelShell(
       title: '호가 주문',
       subtitle: '${instrument.name} · ${instrument.symbol}',
+      leading: AssetLogo(
+        symbol: instrument.symbol,
+        name: instrument.name,
+        assetClass: instrument.assetClass.storageValue,
+        market: instrument.market,
+        size: 34,
+        compact: true,
+      ),
       onRefresh: onRefresh,
       child: orderbookFuture == null
           ? const _PanelStateMessage(
@@ -4689,12 +4715,14 @@ class _OrderbookPanelShell extends StatelessWidget {
     required this.subtitle,
     required this.onRefresh,
     required this.child,
+    this.leading,
   });
 
   final String title;
   final String subtitle;
   final VoidCallback onRefresh;
   final Widget child;
+  final Widget? leading;
 
   @override
   Widget build(BuildContext context) {
@@ -4717,20 +4745,21 @@ class _OrderbookPanelShell extends StatelessWidget {
         children: [
           Row(
             children: [
-              Container(
-                width: 34,
-                height: 34,
-                alignment: Alignment.center,
-                decoration: BoxDecoration(
-                  color: MetaServerColors.ink,
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: const Icon(
-                  Icons.format_list_numbered_rounded,
-                  color: MetaServerColors.mint,
-                  size: 19,
-                ),
-              ),
+              leading ??
+                  Container(
+                    width: 34,
+                    height: 34,
+                    alignment: Alignment.center,
+                    decoration: BoxDecoration(
+                      color: MetaServerColors.ink,
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: const Icon(
+                      Icons.format_list_numbered_rounded,
+                      color: MetaServerColors.mint,
+                      size: 19,
+                    ),
+                  ),
               const SizedBox(width: 10),
               Expanded(
                 child: Column(
@@ -6355,13 +6384,13 @@ class _ToolbarIconButton extends StatelessWidget {
 }
 
 class _IconBadge extends StatelessWidget {
-  const _IconBadge({required this.icon, this.color = MetaServerColors.cyan});
+  const _IconBadge({required this.icon});
 
   final IconData icon;
-  final Color color;
 
   @override
   Widget build(BuildContext context) {
+    const color = MetaServerColors.cyan;
     return Container(
       width: 42,
       height: 42,
@@ -6496,11 +6525,11 @@ class _HoldingTile extends StatelessWidget {
         ? holding.currency
         : (holding.assetClass == 'overseas_stock' ? 'USD' : 'KRW');
     return _DataTile(
-      leading: _IconBadge(
-        icon: isCrypto
-            ? Icons.currency_bitcoin_rounded
-            : Icons.business_center_outlined,
-        color: isCrypto ? MetaServerColors.amber : MetaServerColors.green,
+      leading: AssetLogo(
+        symbol: holding.symbol,
+        name: holding.name,
+        assetClass: holding.assetClass,
+        market: holding.market,
       ),
       title: holding.name,
       subtitle:
@@ -6556,13 +6585,11 @@ class _InstrumentTile extends StatelessWidget {
     return _DataTile(
       selected: selected,
       onTap: onTap,
-      leading: _IconBadge(
-        icon: hasQuote ? Icons.show_chart_rounded : Icons.hourglass_empty,
-        color: !hasQuote
-            ? MetaServerColors.ink.withValues(alpha: 0.42)
-            : instrument.changeRate >= 0
-                ? MetaServerColors.rise
-                : MetaServerColors.fall,
+      leading: AssetLogo(
+        symbol: instrument.symbol,
+        name: instrument.name,
+        assetClass: instrument.assetClass.storageValue,
+        market: instrument.market,
       ),
       title: instrument.name,
       subtitle:
@@ -6753,13 +6780,13 @@ class _SelectedInstrumentHeader extends StatelessWidget {
       ),
       child: Row(
         children: [
-          _IconBadge(
-            icon: hasQuote ? Icons.insights_rounded : Icons.hourglass_empty,
-            color: !hasQuote
-                ? Colors.white.withValues(alpha: 0.58)
-                : instrument.changeRate >= 0
-                    ? MetaServerColors.riseOnDark
-                    : MetaServerColors.fallOnDark,
+          AssetLogo(
+            symbol: instrument.symbol,
+            name: instrument.name,
+            assetClass: instrument.assetClass.storageValue,
+            market: instrument.market,
+            size: 44,
+            onDark: true,
           ),
           const SizedBox(width: 12),
           Expanded(
@@ -6901,9 +6928,11 @@ class _OrderTile extends StatelessWidget {
         order.isCrypto ? _cryptoBaseSymbol(order.symbol) : '주';
     final quantityPrecision = order.isCrypto ? 8 : 2;
     return _DataTile(
-      leading: _IconBadge(
-        icon: order.isBuy ? Icons.add_chart_rounded : Icons.sell_outlined,
-        color: order.isBuy ? MetaServerColors.buy : MetaServerColors.sell,
+      leading: AssetLogo(
+        symbol: order.symbol,
+        name: order.name,
+        assetClass: order.assetClass,
+        market: order.market,
       ),
       title: order.name,
       subtitle:
@@ -6970,9 +6999,11 @@ class _ExecutionTile extends StatelessWidget {
         execution.isCrypto ? _cryptoBaseSymbol(execution.symbol) : '주';
     final quantityPrecision = execution.isCrypto ? 8 : 2;
     return _DataTile(
-      leading: _IconBadge(
-        icon: Icons.done_all_rounded,
-        color: execution.isBuy ? MetaServerColors.buy : MetaServerColors.sell,
+      leading: AssetLogo(
+        symbol: execution.symbol,
+        name: execution.name,
+        assetClass: execution.assetClass,
+        market: execution.market,
       ),
       title: execution.name,
       subtitle:
@@ -7250,11 +7281,17 @@ class _EstimateBox extends StatelessWidget {
 }
 
 class _ReviewRow extends StatelessWidget {
-  const _ReviewRow({required this.label, required this.value, this.valueColor});
+  const _ReviewRow({
+    required this.label,
+    required this.value,
+    this.valueColor,
+    this.valueLeading,
+  });
 
   final String label;
   final String value;
   final Color? valueColor;
+  final Widget? valueLeading;
 
   @override
   Widget build(BuildContext context) {
@@ -7271,11 +7308,27 @@ class _ReviewRow extends StatelessWidget {
               ),
             ),
           ),
-          Text(
-            value,
-            style: TextStyle(
-              color: valueColor ?? MetaServerColors.ink,
-              fontWeight: FontWeight.w900,
+          Flexible(
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.end,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (valueLeading != null) ...[
+                  valueLeading!,
+                  const SizedBox(width: 7),
+                ],
+                Flexible(
+                  child: Text(
+                    value,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      color: valueColor ?? MetaServerColors.ink,
+                      fontWeight: FontWeight.w900,
+                    ),
+                  ),
+                ),
+              ],
             ),
           ),
         ],
