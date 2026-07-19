@@ -1,0 +1,11 @@
+{
+  "name": "MetaServer",
+  "short_name": "MetaServer",
+  "start_url": ".",
+  "display": "standalone",
+  "background_color": "#F3FBF6",
+  "theme_color": "#12372D",
+  "description": "MetaServer mobile and web client",
+  "orientation": "portrait-primary",
+  "prefer_related_applications": false
+}
